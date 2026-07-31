@@ -33,6 +33,13 @@ python3 compare_test_results.py br_nearby_rank_base br_nearby_rank_dev
 python3 compare_test_results.py br_nearby_rank_base br_nearby_rank_dev 20260724
 ```
 
+`run_exp.sh` 依次拉起多个实验目录下的 `submit_luban.sh`（全部放后台并行跑）：
+
+```bash
+bash run_exp.sh br_nearby_rank_lhuc_gate br_nearby_rank_mmoe br_nearby_rank_din_wide br_nearby_rank_ext_focal_loss
+```
+
 ## 目前包含的工具
 
 - `compare_test_results.py`：对比**两个**实验分支的 `test.py` 输出日志，按 buy/cat/click/ext 四个任务输出 auc/gauc/uauc 对比表（含千分制绝对提升），并校验两边各 tower 的 pos 数量是否一致；支持指定 dt（test 的 end day）只在该 dt 的日志里取最新一份
+- `run_exp.sh`：只支持显式传实验文件夹名列表，逐个 `cd` 进对应目录 `nohup bash submit_luban.sh &`，日志落在各自实验文件夹内部（`nohup_submit.log`），最后打印 PID 汇总表（风格参照 `tf_rank/run_test_zs.sh`）
