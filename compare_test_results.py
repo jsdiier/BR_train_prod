@@ -1,144 +1,270 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-对比多个实验分支/目录下 test.py 跑出来的日志，输出关键指标对比表。
+compare_test_results.py
+比较两个实验（最多两组）的 test 结果，输出 buy / cat / click / ext 四个指标表格
+额外验证两个实验各 tower 的 pos 数量是否一致
+用法:
+    python compare_test_results.py <baseline_exp> <new_exp> [dt]
+示例:
 
-用法（在任意一个分支目录下执行都行，各分支目录是兄弟目录）：
-    python3 compare_test_results.py br_nearby_rank_base br_nearby_rank_dev tf_train_base_new_try
+    # 两个都用默认 BASE_DIR，各自取自己 log 目录下启动时间最新的 test_log
+    python compare_test_results.py br_nearby_rank_base br_nearby_rank_dev
 
-默认去脚本所在目录的上一级里找 <实验名>/log/test_log_* ，同一实验有多份日志时取最新修改时间的一份。
+    # baseline 用绝对路径，new 用默认 BASE_DIR
+    python compare_test_results.py /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/br_nearby_rank_base br_nearby_rank_dev
+
+    # 两个都用绝对路径
+    python compare_test_results.py /path/to/exp_a /path/to/exp_b
+
+    # 指定 dt（test 的 end day）：只在该 dt（test_log_<dt>_<启动时间> 的第一段）下的日志里，取启动时间最新的那份
+    python compare_test_results.py br_nearby_rank_base br_nearby_rank_dev 20260724
 """
-import argparse
-import glob
+
 import os
 import re
 import sys
+from tabulate import tabulate
 
-TASKS = ["buy", "cat", "click", "ext"]
-
-PATTERNS = {
-    "all_num": re.compile(r"all_num:(\d+)"),
-    "low_score_rate": re.compile(r"low score rate:([\d.]+)"),
-    "using_time": re.compile(r"using_time_training:\s*([\d.]+)"),
-}
-for t in TASKS:
-    PATTERNS[t + "_pos"] = re.compile(r"pos_{}:(\d+)".format(t))
-    PATTERNS[t + "_rate"] = re.compile(r"{}_rate:([\d.]+)".format(t))
-    PATTERNS[t + "_res"] = re.compile(r"res_{}:([\d.]+)".format(t))
-    PATTERNS[t + "_test"] = re.compile(
-        r"test_{} auc:([\d.]+) gauc:([\d.]+) uauc:([\d.]+) size:(\d+) loss:([\d.]+), pos: (\d+)".format(t)
-    )
-    PATTERNS[t + "_online"] = re.compile(
-        r"online_{} auc:([\d.]+) gauc:([\d.]+) uauc:([\d.]+)".format(t)
-    )
+BASE_DIR = "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR"
 
 
-def find_latest_log(exp_dir):
-    candidates = glob.glob(os.path.join(exp_dir, "log", "test_log_*"))
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
+# ──────────────────────────────────────────────
+# 0. 将实验名/路径解析为完整实验目录
+# ──────────────────────────────────────────────
+def resolve_exp_dir(exp: str) -> str:
+    """
+    若 exp 是绝对路径则直接使用，否则拼接 BASE_DIR。
+    返回实验根目录（不含 /log）。
+    """
+    if os.path.isabs(exp):
+        return exp
+    return os.path.join(BASE_DIR, exp)
 
 
-def parse_log(path):
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
+# ──────────────────────────────────────────────
+# 1. 找最新的 test_log 文件
+# ──────────────────────────────────────────────
+def find_latest_test_log(exp_dir: str, dt: str = None) -> str:
+    """
+    在 <exp_dir>/log/ 下找 test_log_* 文件。
+    文件名格式: test_log_<dt数据截止日>_<启动时间戳>
 
-    result = {}
-    m = PATTERNS["all_num"].search(content)
-    result["all_num"] = int(m.group(1)) if m else None
-    m = PATTERNS["low_score_rate"].search(content)
-    result["low_score_rate"] = float(m.group(1)) if m else None
-    m = PATTERNS["using_time"].search(content)
-    result["using_time_sec"] = float(m.group(1)) if m else None
+    - dt 为 None: 在全部 test_log_* 里，按启动时间戳取最大的一份（原有行为）。
+    - dt 指定时: 只在第一段等于 dt（即 test 的 end day）的 test_log_* 里，按启动时间戳取最大的一份。
+    """
+    log_dir = os.path.join(exp_dir, "log")
+    if not os.path.isdir(log_dir):
+        raise FileNotFoundError(f"log 目录不存在: {log_dir}")
 
-    for t in TASKS:
-        task_result = {}
-        m = PATTERNS[t + "_pos"].search(content)
-        task_result["pos"] = int(m.group(1)) if m else None
-        m = PATTERNS[t + "_rate"].search(content)
-        task_result["pos_rate"] = float(m.group(1)) if m else None
-        m = PATTERNS[t + "_res"].search(content)
-        task_result["avg_pred"] = float(m.group(1)) if m else None
-        m = PATTERNS[t + "_test"].search(content)
-        if m:
-            task_result["auc"] = float(m.group(1))
-            task_result["gauc"] = float(m.group(2))
-            task_result["uauc"] = float(m.group(3))
-            task_result["size"] = int(m.group(4))
-            task_result["loss"] = float(m.group(5))
-        m = PATTERNS[t + "_online"].search(content)
-        if m:
-            task_result["online_auc"] = float(m.group(1))
-            task_result["online_gauc"] = float(m.group(2))
-            task_result["online_uauc"] = float(m.group(3))
-        result[t] = task_result
-
-    return result
-
-
-def format_table(rows, headers):
-    widths = [
-        max(len(str(h)), max((len(str(r[i])) for r in rows), default=0))
-        for i, h in enumerate(headers)
-    ]
-
-    def fmt_row(vals):
-        return "  ".join(str(v).ljust(w) for v, w in zip(vals, widths))
-
-    lines = [fmt_row(headers), fmt_row(["-" * w for w in widths])]
-    for r in rows:
-        lines.append(fmt_row(r))
-    return "\n".join(lines)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="对比多个实验目录的 test.py 输出日志")
-    parser.add_argument("experiments", nargs="+",
-                        help="实验目录名（跟本脚本所在目录同级），如 br_nearby_rank_base br_nearby_rank_dev")
-    parser.add_argument("--base_dir", default=None,
-                        help="实验目录的上级目录，默认取本脚本所在目录的上一级")
-    args = parser.parse_args()
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = args.base_dir or os.path.dirname(script_dir)
-
-    all_results = {}
-    for exp in args.experiments:
-        exp_dir = os.path.join(base_dir, exp)
-        log_path = find_latest_log(exp_dir)
-        if log_path is None:
-            print("[WARN] {}: 找不到 log/test_log_* 文件，跳过".format(exp))
+    pattern = re.compile(r"^test_log_(\d+)_(\d+)$")
+    candidates = []
+    for fname in os.listdir(log_dir):
+        m = pattern.match(fname)
+        if not m:
             continue
-        print("[INFO] {}: 使用日志 {}".format(exp, log_path))
-        all_results[exp] = parse_log(log_path)
+        file_dt, start_ts = m.group(1), m.group(2)
+        if dt is not None and file_dt != dt:
+            continue
+        candidates.append((start_ts, fname))
 
-    if not all_results:
-        print("没有任何实验解析到结果")
-        sys.exit(1)
+    if not candidates:
+        if dt is not None:
+            raise FileNotFoundError(f"在 {log_dir} 下未找到 dt={dt} 的 test_log_* 文件")
+        raise FileNotFoundError(f"在 {log_dir} 下未找到 test_log_* 文件")
 
-    overview_headers = ["experiment", "all_num", "low_score_rate", "using_time_sec"]
-    overview_rows = []
-    for exp, r in all_results.items():
-        overview_rows.append([exp, r.get("all_num"), r.get("low_score_rate"), r.get("using_time_sec")])
-    print("\n=== 总览 ===")
-    print(format_table(overview_rows, overview_headers))
+    candidates.sort(key=lambda x: x[0])
+    latest_fname = candidates[-1][1]
+    return os.path.join(log_dir, latest_fname)
 
-    for t in TASKS:
-        headers = ["experiment", "auc", "gauc", "uauc", "loss", "pos", "pos_rate", "avg_pred",
-                    "online_auc", "online_gauc", "online_uauc"]
-        rows = []
-        for exp, r in all_results.items():
-            tr = r.get(t, {})
-            rows.append([
-                exp,
-                tr.get("auc"), tr.get("gauc"), tr.get("uauc"), tr.get("loss"),
-                tr.get("pos"), tr.get("pos_rate"), tr.get("avg_pred"),
-                tr.get("online_auc"), tr.get("online_gauc"), tr.get("online_uauc"),
-            ])
-        print("\n=== 任务: {} ===".format(t))
-        print(format_table(rows, headers))
+
+# ──────────────────────────────────────────────
+# 2. 解析日志内容
+# ──────────────────────────────────────────────
+def parse_test_log(log_path: str) -> dict:
+    """
+    读取 log 文件末尾，解析各任务的 auc / gauc / uauc / pos。
+    返回结构:
+    {
+        "buy":   {"auc": float, "gauc": float, "uauc": float, "pos": int or None},
+        "cat":   {...},
+        "click": {...},
+        "ext":   {...},
+    }
+    """
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    tail_lines = lines[-50:]
+
+    results = {}
+
+    # 日志格式:
+    #   test_buy auc:0.812845 gauc:0.650200 uauc:0.656800 size:6737113 loss:0.173427, pos: 363942
+    # pos 字段可能不存在（online_xxx 行就没有）
+    metric_pattern = re.compile(
+        r"test_(\w+)\s+"
+        r"auc:([\d.]+)\s+"
+        r"gauc:([\d.]+)\s+"
+        r"uauc:([\d.]+)"
+        r"(?:.*?pos:\s*(\d+))?"          # pos 可选
+    )
+
+    for line in tail_lines:
+        m = metric_pattern.search(line)
+        if m:
+            task = m.group(1)
+            results[task] = {
+                "auc":  float(m.group(2)),
+                "gauc": float(m.group(3)),
+                "uauc": float(m.group(4)),
+                "pos":  int(m.group(5)) if m.group(5) is not None else None,
+            }
+    return results
+
+
+# ──────────────────────────────────────────────
+# 3. 打印对比表格（tabulate）
+# ──────────────────────────────────────────────
+def format_delta(delta: float) -> str:
+    """将千分数绝对提升格式化为带千分号的字符串，如 +2.092‰ 或 -1.500‰"""
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{delta:.3f}‰"
+
+
+def print_comparison_table(
+    task: str,
+    baseline_name: str,
+    new_name: str,
+    baseline_metrics: dict,
+    new_metrics: dict,
+):
+    bm = baseline_metrics.get(task)
+    nm = new_metrics.get(task)
+
+    col_base  = f"baseline\n{baseline_name}"
+    col_new   = f"new\n{new_name}"
+    col_delta = "absolutely \ndelta"
+
+    if bm is None or nm is None:
+        missing = baseline_name if bm is None else new_name
+        print(f"  ⚠  缺少数据: {missing}")
+        return
+
+    rows = []
+    for metric in ("auc", "gauc", "uauc"):
+        b_val = bm[metric]
+        n_val = nm[metric]
+        delta = (n_val - b_val) * 1000
+        rows.append([
+            f"test_{metric}",
+            f"{b_val:.6f}",
+            f"{n_val:.6f}",
+            format_delta(delta),
+        ])
+
+    headers = [task.upper(), col_base, col_new, col_delta]
+    print(tabulate(rows, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
+
+
+# ──────────────────────────────────────────────
+# 4. 验证各 tower 的 pos 是否一致
+# ──────────────────────────────────────────────
+def print_pos_validation(
+    baseline_name: str,
+    new_name: str,
+    baseline_metrics: dict,
+    new_metrics: dict,
+):
+    """
+    打印两个实验各 tower 的 pos 对比表，并标注是否一致。
+    """
+    print("\n" + "=" * 60)
+    print("  POS 一致性验证")
+    print("=" * 60)
+
+    tasks = ("buy", "cat", "click", "ext")
+    rows = []
+    all_match = True
+
+    for task in tasks:
+        bm = baseline_metrics.get(task)
+        nm = new_metrics.get(task)
+
+        b_pos = bm["pos"] if bm and bm.get("pos") is not None else "N/A"
+        n_pos = nm["pos"] if nm and nm.get("pos") is not None else "N/A"
+
+        if b_pos == "N/A" or n_pos == "N/A":
+            status = "miss"
+            all_match = False
+        elif b_pos == n_pos:
+            status = "yes"
+        else:
+            status = "no"
+            all_match = False
+
+        rows.append([task.upper(), b_pos, n_pos, status])
+
+    headers = [
+        "TOWER",
+        f"baseline pos\n{baseline_name}",
+        f"new pos\n{new_name}",
+        "pos_num",
+    ]
+    print(tabulate(rows, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
+
+    if all_match:
+        print("\n  ✅ 所有 tower 的 pos 完全一致，数据对齐正常。\n")
+    else:
+        print("\n  ❌ 存在 pos 不一致的 tower，请检查数据分片是否对齐！\n")
+
+
+# ──────────────────────────────────────────────
+# 5. 主流程
+# ──────────────────────────────────────────────
+def compare_experiments(baseline_exp: str, new_exp: str, dt: str = None):
+    baseline_dir = resolve_exp_dir(baseline_exp)
+    new_dir      = resolve_exp_dir(new_exp)
+
+    # 显示名取路径最后一段，方便表格对齐
+    baseline_name = os.path.basename(baseline_dir)
+    new_name      = os.path.basename(new_dir)
+
+    if dt is not None:
+        print(f"[INFO] 指定 dt (test end day): {dt}（仅在该 dt 下取启动时间最新的 test_log）")
+
+    print(f"\n[INFO] baseline 实验: {baseline_name}")
+    print(f"[INFO] 实验目录:       {baseline_dir}")
+    baseline_log = find_latest_test_log(baseline_dir, dt=dt)
+    print(f"[INFO] 使用 log 文件:  {baseline_log}")
+
+    print(f"\n[INFO] new 实验:      {new_name}")
+    print(f"[INFO] 实验目录:       {new_dir}")
+    new_log = find_latest_test_log(new_dir, dt=dt)
+    print(f"[INFO] 使用 log 文件:  {new_log}")
+
+    baseline_metrics = parse_test_log(baseline_log)
+    new_metrics      = parse_test_log(new_log)
+
+    # ── 指标对比表格 ──
+    for task in ("buy", "cat", "click", "ext"):
+        print_comparison_table(
+            task,
+            baseline_name,
+            new_name,
+            baseline_metrics,
+            new_metrics,
+        )
+
+    # ── pos 一致性验证 ──
+    print_pos_validation(baseline_name, new_name, baseline_metrics, new_metrics)
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) not in (3, 4):
+        print("用法: python compare_test_results.py <baseline_exp> <new_exp> [dt]")
+        print("示例: python compare_test_results.py br_nearby_rank_base br_nearby_rank_dev")
+        print("      python compare_test_results.py /abs/path/to/exp_a br_nearby_rank_dev")
+        print("      python compare_test_results.py br_nearby_rank_base br_nearby_rank_dev 20260724")
+        sys.exit(1)
+
+    dt_arg = sys.argv[3] if len(sys.argv) == 4 else None
+    compare_experiments(sys.argv[1], sys.argv[2], dt=dt_arg)
