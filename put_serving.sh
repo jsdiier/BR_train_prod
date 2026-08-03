@@ -46,13 +46,16 @@ if [ ! -d "$serving_model_path" ]; then
     exit 1
 fi
 
-echo "found latest trained day=$day, uploading $serving_model_path -> ${hadoop_serving_model}/${serving_day}"
+# 不再按 dt 分区，统一固定发布到 export_model，每次用最新 ckpt 整体覆盖
+export_model_dir="${hadoop_serving_model}/export_model"
+
+echo "found latest trained day=$day, uploading $serving_model_path -> ${export_model_dir}"
 
 if ! $hadoop fs -test -e "${hadoop_serving_model}"; then
     $hadoop fs -mkdir -p "${hadoop_serving_model}"
 fi
 
-$hadoop fs -rm -r -f "${hadoop_serving_model}/${serving_day}" || true
-$hadoop fs -put "$serving_model_path" "${hadoop_serving_model}/${serving_day}"
+$hadoop fs -rm -r -f "${export_model_dir}" || true
+$hadoop fs -put "$serving_model_path" "${export_model_dir}"
 
-echo "put_serving done: ${hadoop_serving_model}/${serving_day}"
+echo "put_serving done: ${export_model_dir}"
