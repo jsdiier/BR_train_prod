@@ -68,20 +68,17 @@ framework = "Tensorflow"
 frameworkVersion = "2.10.0"
 modelFormatType = "SavedModel"
 inputFormat = "list"
+signatureKey = "serving_default"
+
 inputs = [
   {
-    name = "sid_features"
-    shape = [-1, 8]
+    name = "features"
+    shape = [-1, 24]
     type = "DT_FLOAT"
-    features = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"]
-  }
-  {
-    name = "fid_features"
-    shape = [-1, 16]
-    type = "DT_FLOAT"
-    features = ["f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24"]
+    features = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24"]
   }
 ]
+
 outputs = [
   {
     name = "output"
@@ -89,8 +86,8 @@ outputs = [
     type = "DT_FLOAT"
   }
 ]
+
 extendInfo {}
-signatureKey = "serving_default"
 EOF
 
 $hadoop fs -rm -f "${hadoop_serving_model}/model.conf" || true
