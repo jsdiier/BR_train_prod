@@ -59,3 +59,14 @@ $hadoop fs -rm -r -f "${export_model_dir}" || true
 $hadoop fs -put "$serving_model_path" "${export_model_dir}"
 
 echo "put_serving done: ${export_model_dir}"
+
+# mock model.conf，跟 export_model 平级
+model_conf_local="./model.conf"
+cat > "$model_conf_local" <<'EOF'
+{"version":1,"framework":"Tensorflow","frameworkVersion":"2.10.0","modelFormatType":"SavedModel","inputFormat":"list","inputs":[{"name":"sid_features","shape":[-1,8],"type":"DT_FLOAT","features":["f1","f2","f3","f4","f5","f6","f7","f8"]},{"name":"fid_features","shape":[-1,16],"type":"DT_FLOAT","features":["f9","f10","f11","f12","f13","f14","f15","f16","f17","f18","f19","f20","f21","f22","f23","f24"]}],"outputs":[{"name":"output","shape":[-1,1],"type":"DT_FLOAT"}],"extendInfo":{},"signatureKey":"serving_default"}
+EOF
+
+$hadoop fs -rm -f "${hadoop_serving_model}/model.conf" || true
+$hadoop fs -put "$model_conf_local" "${hadoop_serving_model}/model.conf"
+
+echo "put_serving model.conf done: ${hadoop_serving_model}/model.conf"
