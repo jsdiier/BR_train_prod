@@ -70,3 +70,12 @@ $hadoop fs -rm -f "${hadoop_serving_model}/model.conf" || true
 $hadoop fs -put "$model_conf_local" "${hadoop_serving_model}/model.conf"
 
 echo "put_serving model.conf done: ${hadoop_serving_model}/model.conf"
+
+# 把 model.done 最后一天写成一个 tag 文件，跟 export_model 平级，用于确认线上模型对应哪个训练日期
+version_tag_local="./model_version"
+echo -n "$day" > "$version_tag_local"
+
+$hadoop fs -rm -f "${hadoop_serving_model}/model_version" || true
+$hadoop fs -put "$version_tag_local" "${hadoop_serving_model}/model_version"
+
+echo "put_serving model_version done: ${hadoop_serving_model}/model_version (day=$day)"
