@@ -60,37 +60,6 @@ $hadoop fs -put "$serving_model_path" "${export_model_dir}"
 
 echo "put_serving done: ${export_model_dir}"
 
-# mock model.conf(EVE 平台自定义解析器要求的格式，跟 export_model 平级)：inputs/outputs 改为单个对象(非数组)
-model_conf_local="./model.conf"
-cat > "$model_conf_local" <<'EOF'
-version = 1
-framework = "Tensorflow"
-frameworkVersion = "2.10.0"
-modelFormatType = "SavedModel"
-inputFormat = "list"
-signatureKey = "serving_default"
-
-inputs = {
-  name = "features"
-  shape = [-1, 24]
-  type = "DT_FLOAT"
-  features = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24"]
-}
-
-outputs = {
-  name = "output"
-  shape = [-1, 1]
-  type = "DT_FLOAT"
-}
-
-extendInfo = {}
-EOF
-
-$hadoop fs -rm -f "${hadoop_serving_model}/model.conf" || true
-$hadoop fs -put "$model_conf_local" "${hadoop_serving_model}/model.conf"
-
-echo "put_serving model.conf done: ${hadoop_serving_model}/model.conf"
-
 # 把 model.done 最后一天写成一个 tag 文件，跟 export_model 平级，用于确认线上模型对应哪个训练日期
 version_tag_local="./model_version"
 echo -n "$day" > "$version_tag_local"
