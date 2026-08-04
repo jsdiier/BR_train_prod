@@ -60,8 +60,7 @@ $hadoop fs -put "$serving_model_path" "${export_model_dir}"
 
 echo "put_serving done: ${export_model_dir}"
 
-# mock model.conf(EVE 平台自定义解析器要求的格式，跟 export_model 平级)：
-# EVE 的 model.conf 解析器不支持 {} 对象出现在数组内部，inputs/outputs 数组里只能是标量字段的裸赋值，不能包对象
+# mock model.conf(EVE 平台自定义解析器要求的格式，跟 export_model 平级)：inputs/outputs 改为单个对象(非数组)
 model_conf_local="./model.conf"
 cat > "$model_conf_local" <<'EOF'
 version = 1
@@ -71,18 +70,18 @@ modelFormatType = "SavedModel"
 inputFormat = "list"
 signatureKey = "serving_default"
 
-inputs = [
+inputs {
   name = "features"
   shape = [-1, 24]
   type = "DT_FLOAT"
   features = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24"]
-]
+}
 
-outputs = [
+outputs {
   name = "output"
   shape = [-1, 1]
   type = "DT_FLOAT"
-]
+}
 
 extendInfo {}
 EOF
