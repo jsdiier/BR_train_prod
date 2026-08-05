@@ -68,3 +68,15 @@ $hadoop fs -rm -f "${hadoop_serving_model}/model_version" || true
 $hadoop fs -put "$version_tag_local" "${hadoop_serving_model}/model_version"
 
 echo "put_serving model_version done: ${hadoop_serving_model}/model_version (day=$day)"
+
+# 生产 _SUCCESS 标记文件，路径 hadoop_root/BR/year=YYYY/month=MM/day=DD/_SUCCESS（跟 serving_model 平级），
+# dt 取 model.done 最后一天($day)，不用 common.conf 的 train_end_day(手动跑非 is_auto_train 场景可能没同步更新)
+success_year="${day:0:4}"
+success_month="${day:4:2}"
+success_day="${day:6:2}"
+success_dir="${hadoop_root}BR/year=${success_year}/month=${success_month}/day=${success_day}"
+
+$hadoop fs -mkdir -p "${success_dir}"
+$hadoop fs -touchz "${success_dir}/_SUCCESS"
+
+echo "put_serving _SUCCESS done: ${success_dir}/_SUCCESS"
