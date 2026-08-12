@@ -41,31 +41,46 @@ def resolve_exp_dir(exp: str) -> str:
 # ──────────────────────────────────────────────
 def find_latest_test_log(exp_dir: str, dt: str = None) -> str:
     """
-    在 <exp_dir>/log/ 下找 test_log_* 文件。
-    文件名格式: test_log_<dt数据截止日>_<启动时间戳>
+    在 <exp_dir>/log/ 下找普通或滚动测试日志：
+      test_log_<测试截止日>_<启动时间戳>
+      rolling_test_ckpt_<ckpt日>_from_<测试开始日>_to_<测试截止日>_<启动时间戳>
 
-    - dt 为 None: 在全部 test_log_* 里，按启动时间戳取最大的一份（原有行为）。
-    - dt 指定时: 只在第一段等于 dt（即 test 的 end day）的 test_log_* 里，按启动时间戳取最大的一份。
+    - dt 为 None: 在全部可识别测试日志里，按启动时间戳取最新一份。
+    - dt 指定时: 只保留测试截止日等于 dt 的日志，再按启动时间戳取最新一份。
+
+    两种命名可能同时存在（例如旧软链接）；用真实路径去重，避免重复候选。
     """
     log_dir = os.path.join(exp_dir, "log")
     if not os.path.isdir(log_dir):
         raise FileNotFoundError(f"log 目录不存在: {log_dir}")
 
-    pattern = re.compile(r"^test_log_(\d+)_(\d+)$")
+    patterns = (
+        re.compile(r"^test_log_(?P<end_day>\d{8})_(?P<start_ts>\d+)$"),
+        re.compile(
+            r"^rolling_test_ckpt_(?P<ckpt_day>\d{8})_"
+            r"from_(?P<test_start_day>\d{8})_to_(?P<end_day>\d{8})_"
+            r"(?P<start_ts>\d+)$"
+        ),
+    )
     candidates = []
+    seen_real_paths = set()
     for fname in os.listdir(log_dir):
-        m = pattern.match(fname)
+        m = next((pattern.match(fname) for pattern in patterns if pattern.match(fname)), None)
         if not m:
             continue
-        file_dt, start_ts = m.group(1), m.group(2)
+        file_dt, start_ts = m.group("end_day"), m.group("start_ts")
         if dt is not None and file_dt != dt:
             continue
+        real_path = os.path.realpath(os.path.join(log_dir, fname))
+        if real_path in seen_real_paths:
+            continue
+        seen_real_paths.add(real_path)
         candidates.append((start_ts, fname))
 
     if not candidates:
         if dt is not None:
-            raise FileNotFoundError(f"在 {log_dir} 下未找到 dt={dt} 的 test_log_* 文件")
-        raise FileNotFoundError(f"在 {log_dir} 下未找到 test_log_* 文件")
+            raise FileNotFoundError(f"在 {log_dir} 下未找到测试截止日 dt={dt} 的普通/滚动测试日志")
+        raise FileNotFoundError(f"在 {log_dir} 下未找到普通/滚动测试日志")
 
     candidates.sort(key=lambda x: x[0])
     latest_fname = candidates[-1][1]
