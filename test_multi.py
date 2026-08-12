@@ -2,7 +2,8 @@
 test_multi.py
 比较一个基线实验和多个实验（1对多）的 test 结果，输出 buy / cat / click / ext 四个指标表格
 每个实验行用两行展示：数值 + 相对基线的千分位提升（论文风格）
-额外验证各实验各 tower 的 pos 数量是否与基线一致
+额外验证各实验各 tower 的 pos 数量是否与基线一致。
+若日志包含 [INFERENCE_BENCHMARK]，同时输出推理性能对比；旧日志缺失性能数据时显示 N/A。
 
 用法:
     python test_multi.py <baseline_exp> <exp1> [exp2] [exp3] ... [dt]
@@ -132,6 +133,49 @@ def parse_test_log(log_path: str) -> dict:
     return results
 
 
+def parse_inference_benchmark(log_path: str) -> dict:
+    """解析可选的推理性能日志；同一文件有多次记录时取最后一组完整结果。"""
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+
+    config_pattern = re.compile(
+        r"\[INFERENCE_BENCHMARK\]\s+device:(.*?)\s+batch_size:(\d+)\s+"
+        r"warmup_batches:(\d+)\s+measure_batches:(\d+)\s+samples:(\d+)"
+    )
+    model_pattern = re.compile(
+        r"\[INFERENCE_BENCHMARK\]\s+model\s+"
+        r"throughput_samples_s:([\d.]+)\s+latency_ms_sample:([\d.]+)\s+"
+        r"batch_latency_p50_ms:([\d.]+)\s+batch_latency_p95_ms:([\d.]+)"
+    )
+    e2e_pattern = re.compile(
+        r"\[INFERENCE_BENCHMARK\]\s+end_to_end\s+"
+        r"throughput_samples_s:([\d.]+)\s+"
+        r"batch_latency_p50_ms:([\d.]+)\s+batch_latency_p95_ms:([\d.]+)"
+    )
+
+    configs = list(config_pattern.finditer(content))
+    models = list(model_pattern.finditer(content))
+    e2es = list(e2e_pattern.finditer(content))
+    if not configs or not models or not e2es:
+        return {}
+
+    config, model, e2e = configs[-1], models[-1], e2es[-1]
+    return {
+        "device": config.group(1).strip(),
+        "batch_size": int(config.group(2)),
+        "warmup_batches": int(config.group(3)),
+        "measure_batches": int(config.group(4)),
+        "samples": int(config.group(5)),
+        "model_throughput": float(model.group(1)),
+        "model_latency_sample": float(model.group(2)),
+        "model_p50": float(model.group(3)),
+        "model_p95": float(model.group(4)),
+        "e2e_throughput": float(e2e.group(1)),
+        "e2e_p50": float(e2e.group(2)),
+        "e2e_p95": float(e2e.group(3)),
+    }
+
+
 # ──────────────────────────────────────────────
 # 3. 千分位提升格式化
 # ──────────────────────────────────────────────
@@ -233,6 +277,73 @@ def print_pos_validation(
         print("\n  ❌ 存在 pos 与基线不一致（或缺失）的实验，请检查数据分片是否对齐！\n")
 
 
+def format_percent_delta(value: float, baseline: float) -> str:
+    if baseline == 0:
+        return "N/A"
+    delta = (value / baseline - 1.0) * 100.0
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{delta:.2f}%"
+
+
+def print_inference_comparison(
+    baseline_name: str,
+    exp_names: list,
+    baseline_perf: dict,
+    all_exp_perf: dict,
+):
+    print("\n" + "=" * 70)
+    print("  推理性能对比（吞吐越高越好，延迟越低越好）")
+    print("=" * 70)
+
+    metrics = (
+        ("model throughput", "model_throughput", "samples/s"),
+        ("model latency/sample", "model_latency_sample", "ms"),
+        ("model batch P50", "model_p50", "ms"),
+        ("model batch P95", "model_p95", "ms"),
+        ("end-to-end throughput", "e2e_throughput", "samples/s"),
+        ("end-to-end batch P50", "e2e_p50", "ms"),
+        ("end-to-end batch P95", "e2e_p95", "ms"),
+    )
+
+    rows = []
+    all_names = [baseline_name] + exp_names
+    all_perf = {baseline_name: baseline_perf, **all_exp_perf}
+    for name in all_names:
+        perf = all_perf.get(name) or {}
+        is_baseline = name == baseline_name
+        row = [f"{name}(baseline)" if is_baseline else name]
+        for _, key, unit in metrics:
+            value = perf.get(key)
+            baseline_value = baseline_perf.get(key) if baseline_perf else None
+            if value is None:
+                row.append("N/A")
+            elif is_baseline or baseline_value is None:
+                row.append(f"{value:.3f} {unit}")
+            else:
+                row.append(f"{value:.3f} {unit}\n({format_percent_delta(value, baseline_value)})")
+        rows.append(row)
+
+    headers = ["experiment"] + [label for label, _, _ in metrics]
+    print(tabulate(rows, headers=headers, tablefmt="fancy_grid", stralign="center"))
+
+    configs = []
+    for name in all_names:
+        perf = all_perf.get(name) or {}
+        if perf:
+            configs.append((name, perf.get("device"), perf.get("batch_size"),
+                            perf.get("warmup_batches"), perf.get("measure_batches"), perf.get("samples")))
+    if configs:
+        print("\n  测试配置:")
+        print(tabulate(configs,
+                       headers=["experiment", "device", "batch", "warmup", "measured", "samples"],
+                       tablefmt="simple", stralign="center", numalign="center"))
+        comparable = len({config[1:] for config in configs}) == 1
+        if len(configs) > 1 and not comparable:
+            print("\n  ⚠ 性能测试配置不完全一致，耗时结果不宜直接归因于模型结构。")
+    if not baseline_perf:
+        print("\n  ℹ 基线日志没有推理耗时；已兼容展示实验绝对值，但无法计算相对变化。")
+
+
 # ──────────────────────────────────────────────
 # 6. 主流程
 # ──────────────────────────────────────────────
@@ -251,14 +362,17 @@ def compare_experiments(baseline_exp: str, exps: list, dt: str = None):
     baseline_log = find_latest_test_log(baseline_dir, dt=dt)
     print(f"[INFO] 使用 log 文件: {baseline_log}")
     baseline_metrics = parse_test_log(baseline_log)
+    baseline_perf = parse_inference_benchmark(baseline_log)
 
     all_exp_metrics = {}
+    all_exp_perf = {}
     for name, dir_ in zip(exp_names, exp_dirs):
         print(f"\n[INFO] 对比实验: {name}")
         print(f"[INFO] 实验目录:  {dir_}")
         log = find_latest_test_log(dir_, dt=dt)
         print(f"[INFO] 使用 log 文件: {log}")
         all_exp_metrics[name] = parse_test_log(log)
+        all_exp_perf[name] = parse_inference_benchmark(log)
 
     # ── 指标对比表格 ──
     for task in ("buy", "cat", "click", "ext"):
@@ -266,6 +380,9 @@ def compare_experiments(baseline_exp: str, exps: list, dt: str = None):
 
     # ── pos 一致性验证 ──
     print_pos_validation(baseline_name, exp_names, baseline_metrics, all_exp_metrics)
+
+    # 始终输出性能表：旧实验无性能日志时显示N/A，保证向后兼容。
+    print_inference_comparison(baseline_name, exp_names, baseline_perf, all_exp_perf)
 
 
 if __name__ == "__main__":
