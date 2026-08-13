@@ -307,34 +307,33 @@ def print_inference_comparison(
 
     all_names = [baseline_name] + exp_names
     all_perf = {baseline_name: baseline_perf, **all_exp_perf}
-    for name in all_names:
-        perf = all_perf.get(name) or {}
-        is_baseline = name == baseline_name
-        display_name = f"{name} (baseline)" if is_baseline else name
-        print(f"\n  实验: {display_name}")
+    for label, key, unit in metrics:
+        direction = "越高越好" if "throughput" in key else "越低越好"
+        print(f"\n  {label}（{unit}，{direction}）")
         rows = []
-        for label, key, unit in metrics:
+        for name in all_names:
+            perf = all_perf.get(name) or {}
+            is_baseline = name == baseline_name
             value = perf.get(key)
             baseline_value = baseline_perf.get(key) if baseline_perf else None
             if value is None:
                 value_text = "N/A"
-                delta_text = "—"
+                delta_text = ""
             else:
                 value_text = f"{value:.3f} {unit}"
-                if is_baseline:
-                    delta_text = "baseline"
-                elif baseline_value is None:
-                    delta_text = "N/A"
-                else:
-                    delta_text = format_percent_delta(value, baseline_value)
-            direction = "higher is better" if "throughput" in key else "lower is better"
-            rows.append([label, value_text, delta_text, direction])
+                delta_text = "" if is_baseline else (
+                    "(N/A)" if baseline_value is None
+                    else f"({format_percent_delta(value, baseline_value)})"
+                )
+            display_name = f"{name}(baseline)" if is_baseline else name
+            display_value = value_text if not delta_text else f"{value_text}\n{delta_text}"
+            rows.append([display_name, display_value])
         print(tabulate(
             rows,
-            headers=["metric", "value", "vs baseline", "direction"],
+            headers=["experiment", "value / vs baseline"],
             tablefmt="fancy_grid",
-            stralign="left",
-            numalign="right",
+            stralign="center",
+            numalign="center",
         ))
 
     configs = []
