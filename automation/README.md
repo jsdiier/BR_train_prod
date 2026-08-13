@@ -27,3 +27,26 @@ bash $BASE/shared_tools/automation/automation_tick.sh
 
 确认手动 tick 正常后，再使用 `flock` 配置 crontab。不要同时启用旧的自动提交
 crontab 和新的控制器。
+
+## 新实验注册
+
+新实验分支根目录必须包含 `experiment.json`。控制器扫描远程分支，跳过
+`main/shared_tools`；只有配置合法且 `enabled=true` 的新分支才会被 clone，并由外层
+启动该分支原有的 `submit_luban.sh`。已有 run JSON 的分支不会因后续 commit 自动重跑。
+
+```json
+{
+  "enabled": true,
+  "baseline": "tf_train_base_new_try_roll_test_predict_time",
+  "train_start_day": "20260303",
+  "train_end_day": "20260720",
+  "test_start_day": "20260721",
+  "test_end_day": "20260724",
+  "auto_test_start_ckpt_day": "20260724",
+  "auto_test_end_day": "20260801",
+  "require_inference_benchmark": true
+}
+```
+
+新实验在已有 active batch 运行期间只创建 run 状态，不会混入当前批次。当前批次完成后，
+未入批的运行会由 `manage_batch.py` 冻结为下一批。
