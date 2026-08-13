@@ -305,26 +305,37 @@ def print_inference_comparison(
         ("end-to-end batch P95", "e2e_p95", "ms"),
     )
 
-    rows = []
     all_names = [baseline_name] + exp_names
     all_perf = {baseline_name: baseline_perf, **all_exp_perf}
     for name in all_names:
         perf = all_perf.get(name) or {}
         is_baseline = name == baseline_name
-        row = [f"{name}(baseline)" if is_baseline else name]
-        for _, key, unit in metrics:
+        display_name = f"{name} (baseline)" if is_baseline else name
+        print(f"\n  实验: {display_name}")
+        rows = []
+        for label, key, unit in metrics:
             value = perf.get(key)
             baseline_value = baseline_perf.get(key) if baseline_perf else None
             if value is None:
-                row.append("N/A")
-            elif is_baseline or baseline_value is None:
-                row.append(f"{value:.3f} {unit}")
+                value_text = "N/A"
+                delta_text = "—"
             else:
-                row.append(f"{value:.3f} {unit}\n({format_percent_delta(value, baseline_value)})")
-        rows.append(row)
-
-    headers = ["experiment"] + [label for label, _, _ in metrics]
-    print(tabulate(rows, headers=headers, tablefmt="fancy_grid", stralign="center"))
+                value_text = f"{value:.3f} {unit}"
+                if is_baseline:
+                    delta_text = "baseline"
+                elif baseline_value is None:
+                    delta_text = "N/A"
+                else:
+                    delta_text = format_percent_delta(value, baseline_value)
+            direction = "higher is better" if "throughput" in key else "lower is better"
+            rows.append([label, value_text, delta_text, direction])
+        print(tabulate(
+            rows,
+            headers=["metric", "value", "vs baseline", "direction"],
+            tablefmt="fancy_grid",
+            stralign="left",
+            numalign="right",
+        ))
 
     configs = []
     for name in all_names:
