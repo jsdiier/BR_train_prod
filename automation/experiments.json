@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "default_baseline": "tf_train_base_new_try_roll_test_predict_time",
+  "defaults": {
+    "train_start_day": "20260303",
+    "train_end_day": "20260720",
+    "test_start_day": "20260721",
+    "test_end_day": "20260724",
+    "auto_test_start_ckpt_day": "20260724",
+    "auto_test_end_day": "20260801",
+    "require_inference_benchmark": true
+  },
+  "experiments": [
+    {"branch": "BR_train_buy_pairwise_loss"},
+    {"branch": "BR_train_dcn_v2"},
+    {"branch": "BR_train_din_semantic_aligned_query_PRD"},
+    {"branch": "BR_train_din_semantic_residual_query"},
+    {"branch": "BR_train_merge_pos_exp"},
+    {"branch": "BR_train_onetrans_lite"},
+    {"branch": "BR_train_onetrans_lite_semantic_din"},
+    {"branch": "BR_train_recency_repeat_purchase_v2"},
+    {"branch": "BR_train_rolemix_upgrade"}
+  ]
+}

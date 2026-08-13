@@ -54,3 +54,4 @@ python3 test_multi.py tf_train_base_new_try br_nearby_rank_deep_tower br_nearby_
 - `compare_test_results.py`：对比**两个**实验分支的 `test.py` 输出日志，按 buy/cat/click/ext 四个任务输出 auc/gauc/uauc 对比表（含千分制绝对提升），并校验两边各 tower 的 pos 数量是否一致；支持指定 dt（test 的 end day）只在该 dt 的日志里取最新一份
 - `test_multi.py`：对比**一个基线 + 任意多个实验**的 `test.py` 输出日志，按 buy/cat/click/ext 四个任务输出对比表；每个实验行用两行展示（数值 + 相对基线的千分位提升，论文风格），并校验各实验各 tower 的 pos 是否与基线一致；同样支持指定 dt
 - `run_exp.sh`：只支持显式传实验文件夹名列表，逐个 `cd` 进对应目录 `nohup bash submit_luban.sh &`，日志落在各自实验文件夹内部（`nohup_submit.log`），最后打印 PID 汇总表（风格参照 `tf_rank/run_test_zs.sh`）
+- `automation/`：实验运行状态、严格产物验收、冻结批次和统一结果回传。代码保存在本分支，运行时 JSON 保存在远端根目录的 `automation_state/`；不会修改实验分支中的 `submit_luban.sh`。
