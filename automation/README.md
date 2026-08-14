@@ -25,6 +25,11 @@ $PY $BASE/shared_tools/automation/init_existing_runs.py \
 bash $BASE/shared_tools/automation/automation_tick.sh
 ```
 
+`automation_tick.sh` 在入口显式执行
+`source /home/luban/rank-ssl/chenpinyuan/miniconda_base/bin/activate SFT_A6000`，确保
+crontab 与手动执行使用同一个依赖环境。可通过 `CONDA_ACTIVATE`、`AUTOMATION_ENV` 和
+`PYTHON_BIN` 环境变量覆盖默认值。
+
 确认手动 tick 正常后，再使用 `flock` 配置 crontab。不要同时启用旧的自动提交
 crontab 和新的控制器。
 
