@@ -153,6 +153,18 @@ def main():
     first_batch = next(iter(make_dataset(local_files[days[0]])))
     model = Model(training=False, pred=True)
     model([first_batch["fea_ids"], first_batch["fea_vals"]])
+
+    # Model creates an Adam optimizer in __init__, and Keras registers it as a
+    # trackable child.  A model-only Checkpoint would otherwise still discover
+    # that child and recreate every Adam slot while restoring, which is both
+    # unnecessary for inference and can consume several times the model memory.
+    if hasattr(model, "_delete_tracking"):
+        model._delete_tracking("optimizer")
+    object.__setattr__(model, "optimizer", None)
+    tracked_children = model._trackable_children()
+    if "optimizer" in tracked_children:
+        raise RuntimeError("Failed to detach optimizer from inference model")
+
     tf.train.Checkpoint(model=model).restore(latest_checkpoint).expect_partial()
     model.training = False
     model.pred = True
