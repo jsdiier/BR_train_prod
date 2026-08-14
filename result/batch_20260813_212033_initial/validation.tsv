@@ -1,0 +1,10 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_buy_pairwise_loss	yes	yes	yes	yes	yes	yes
+BR_train_dcn_v2	yes	yes	yes	yes	yes	yes
+BR_train_din_semantic_aligned_query_PRD	yes	yes	yes	yes	yes	yes
+BR_train_din_semantic_residual_query	yes	yes	yes	yes	yes	yes
+BR_train_merge_pos_exp	yes	yes	yes	yes	yes	yes
+BR_train_onetrans_lite	yes	yes	yes	yes	yes	yes
+BR_train_onetrans_lite_semantic_din	yes	yes	yes	yes	yes	yes
+BR_train_recency_repeat_purchase_v2	yes	yes	yes	yes	yes	yes
+BR_train_rolemix_upgrade	yes	yes	yes	yes	yes	yes
