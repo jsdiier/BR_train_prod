@@ -1,0 +1,6 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_buy_aux_pcgrad_shared	yes	yes	yes	yes	yes	yes
+BR_train_buy_cat_click_logit_residual	yes	yes	yes	yes	yes	yes
+BR_train_buy_funnel_residual_adapter	yes	yes	yes	yes	yes	yes
+BR_train_buy_uid_hard_pairwise_loss	yes	yes	yes	yes	yes	yes
+BR_train_din_dual_output_residual	yes	yes	yes	yes	yes	yes

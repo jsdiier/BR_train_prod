@@ -1,0 +1,7 @@
+[INFO] tf_train_base_new_try_roll_test_predict_time: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/tf_train_base_new_try_roll_test_predict_time/model/rolling_metrics.tsv
+[INFO] BR_train_buy_aux_pcgrad_shared: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/BR_train_buy_aux_pcgrad_shared/model/rolling_metrics.tsv
+[INFO] BR_train_buy_cat_click_logit_residual: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/BR_train_buy_cat_click_logit_residual/model/rolling_metrics.tsv
+[INFO] BR_train_buy_funnel_residual_adapter: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/BR_train_buy_funnel_residual_adapter/model/rolling_metrics.tsv
+[INFO] BR_train_buy_uid_hard_pairwise_loss: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/BR_train_buy_uid_hard_pairwise_loss/model/rolling_metrics.tsv
+[INFO] BR_train_din_dual_output_residual: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/BR_train_din_dual_output_residual/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR/shared_tools/result/batch_20260814_174513/rolling_auc.html
