@@ -1,0 +1,9 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_buy_cat_proxy_score	yes	yes	yes	yes	yes	yes
+BR_train_buy_click_conditional_loss	yes	yes	yes	yes	yes	yes
+BR_train_buy_combo_cat_fusion	yes	yes	yes	yes	yes	yes
+BR_train_buy_combo_ctr_exp_weakpos	yes	yes	yes	yes	yes	yes
+BR_train_buy_ctr_exponent_alpha	yes	yes	yes	yes	yes	yes
+BR_train_buy_funnel_order_consistency	yes	yes	yes	yes	yes	yes
+BR_train_buy_rankmixer_feature_aligned_tokens	yes	yes	yes	yes	yes	yes
+BR_train_buy_search_seq_semantic_residual	yes	yes	yes	yes	yes	yes
