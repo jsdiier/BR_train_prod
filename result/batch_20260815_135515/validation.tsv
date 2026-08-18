@@ -1,6 +1,0 @@
-branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
-BR_train_buy_detached_global_pairwise_sidecar	no	no	no	no	no	no
-BR_train_buy_detached_multiscore_stacker	yes	yes	yes	yes	yes	yes
-BR_train_buy_detached_postclick_expert	no	yes	yes	no	no	no
-BR_train_buy_priority_aux_projection	yes	yes	yes	yes	yes	yes
-BR_train_buy_purchase_intent_sidecar	yes	yes	yes	yes	yes	yes
