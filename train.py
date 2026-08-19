@@ -26,7 +26,10 @@ class Learner:
         with tf.GradientTape() as tape:
             pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
 
-            loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
+            buy_label = tf.expand_dims(feat['cvr_label'], 1)
+            buy_pt = pred_buy * buy_label + (1.0 - pred_buy) * (1.0 - buy_label)
+            focal_weight = tf.pow(1.0 - buy_pt, 2.0)
+            loss_buy = model.loss_bc(buy_label, pred_buy) * focal_weight
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
             loss_click = model.loss_bc(tf.expand_dims(feat['clk_label'], 1), pred_click)
             loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), pred_ext)
