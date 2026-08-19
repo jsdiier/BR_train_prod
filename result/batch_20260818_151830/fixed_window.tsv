@@ -1,0 +1,13 @@
+experiment	task	auc	gauc	uauc	pos	log_path
+BR_train_prod_bs_lr	buy	0.835069	0.6989	0.694	710810	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608130236
+BR_train_prod_bs_lr	cat	0.833968	0.7024	0.6973	735120	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608130236
+BR_train_prod_bs_lr	click	0.802264	0.6979	0.6957	913818	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608130236
+BR_train_prod_bs_lr	ext	0.864008	0.8114	0.8108	24499	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608130236
+BR_train_prod_bs_lr_batch_control	buy	0.834631	0.6971	0.6921	710810	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_batch_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190147
+BR_train_prod_bs_lr_batch_control	cat	0.8335	0.7007	0.6957	735120	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_batch_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190147
+BR_train_prod_bs_lr_batch_control	click	0.801928	0.6967	0.6943	913818	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_batch_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190147
+BR_train_prod_bs_lr_batch_control	ext	0.863544	0.8089	0.8077	24499	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_batch_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190147
+BR_train_prod_bs_lr_lr_control	buy	0.834016	0.6963	0.6914	710810	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190019
+BR_train_prod_bs_lr_lr_control	cat	0.832977	0.7001	0.6952	735120	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190019
+BR_train_prod_bs_lr_lr_control	click	0.801228	0.696	0.694	913818	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190019
+BR_train_prod_bs_lr_lr_control	ext	0.863336	0.8102	0.8089	24499	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_control/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608190019

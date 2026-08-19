@@ -1,0 +1,4 @@
+[INFO] BR_train_prod_bs_lr: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_batch_control: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_batch_control/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_lr_control: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_control/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260818_151830/rolling_auc.html

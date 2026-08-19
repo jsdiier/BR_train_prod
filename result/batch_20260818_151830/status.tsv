@@ -1,0 +1,3 @@
+run_id	branch	commit	status	failure_reason
+BR_train_prod_bs_lr_batch_control@1dbde61d33c0@attempt_1	BR_train_prod_bs_lr_batch_control	1dbde61d33c015ca30a92aee89f17f0efcfedade	done	
+BR_train_prod_bs_lr_lr_control@7b832a0c87a0@attempt_1	BR_train_prod_bs_lr_lr_control	7b832a0c87a05e6680ce1716532af2409633ae01	done	
