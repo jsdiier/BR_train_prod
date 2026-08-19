@@ -21,7 +21,7 @@ import re
 import sys
 from tabulate import tabulate
 
-BASE_DIR = "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # ──────────────────────────────────────────────
