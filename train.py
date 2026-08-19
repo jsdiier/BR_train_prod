@@ -34,6 +34,7 @@ class Learner:
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
+            gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
