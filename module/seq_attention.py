@@ -58,13 +58,13 @@ class MultiHeadDINAttention(tf.keras.layers.Layer):
         k = self.k_dense(k)
         v = self.v_dense(v)
 
-        def split_heads(x):
-            x = tf.reshape(x, [batch_size, seq_len, self.num_heads, self.head_dim])
+        def split_heads(x, length):
+            x = tf.reshape(x, [batch_size, length, self.num_heads, self.head_dim])
             return tf.transpose(x, [0, 2, 1, 3])
 
-        qh = split_heads(q)
-        kh = split_heads(k)
-        vh = split_heads(v)
+        qh = split_heads(q, 1)
+        kh = split_heads(k, seq_len)
+        vh = split_heads(v, seq_len)
 
         scores = tf.matmul(qh, kh, transpose_b=True) / tf.sqrt(tf.cast(self.head_dim, tf.float32))
         mask_expanded = tf.expand_dims(tf.expand_dims(mask, axis=1), axis=1)
