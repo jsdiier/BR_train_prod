@@ -582,7 +582,7 @@ class Model(tf.keras.Model):
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
 
-        task_outputs = self.ple([concat, concat, concat, concat, concat])
+        task_outputs = self.ple(concat)
 
         buy_tower_output = self.buy_tower(task_outputs[0], training=self.training)
         cat_tower_output = self.cat_tower(task_outputs[1], training=self.training)
