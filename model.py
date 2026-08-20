@@ -8,6 +8,7 @@ from tensorflow.python.framework import sparse_tensor
 from module.rankmixer_v4 import *
 from logger import logger
 from module.seq_attention import *
+from module.feature_cross import ParallelMaskNet
 
 
 class Model(tf.keras.Model):
@@ -104,6 +105,13 @@ class Model(tf.keras.Model):
         # 初始化底层主网络
         self.rankmixer = RankMixer(t=16, token_dim=768, num_heads=16, num_experts=16, hidden_ratio=2,
                                    training=self.training)
+        self.igm_cross = ParallelMaskNet(
+            input_mask_dim=768,
+            igm_reduce_list=[4],
+            maskblock_hidden_dim_list=[256],
+            mlp_hidden_list=[256],
+            prefix='igm',
+        )
         # 初始化序列网络
         self.seq_click_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_click_seq')
         self.seq_pay_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_pay_seq')
@@ -574,8 +582,9 @@ class Model(tf.keras.Model):
         additional_dims = tf.zeros([tf.shape(deep)[0], self.rankmixer.t - remain_dims])
         deep_input = tf.concat([deep, additional_dims], axis=1)
         rankmixer_output = self.rankmixer(deep_input)
+        rankmixer_cross = self.igm_cross([rankmixer_output, rankmixer_output])
 
-        concat = tf.concat([lr, fm, rankmixer_output], axis=1)
+        concat = tf.concat([lr, fm, rankmixer_output, rankmixer_cross], axis=1)
 
         buy_tower_output = self.buy_tower(concat, training=self.training)
         cat_tower_output = self.cat_tower(concat, training=self.training)
@@ -600,4 +609,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-
