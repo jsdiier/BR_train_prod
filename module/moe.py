@@ -87,6 +87,24 @@ class MMOE(tf.keras.layers.Layer):
 
         return task_outputs
 
+class MultiLayerPerceptron(tf.keras.layers.Layer):
+    def __init__(self, hidden_dims, dropout=0.0, use_bn=False,
+                 output_layer=False, output_activation=None, output_dim=None, **kwargs):
+        super(MultiLayerPerceptron, self).__init__(**kwargs)
+        layers = []
+        for units in hidden_dims:
+            layers.append(tf.keras.layers.Dense(units, activation=tf.nn.swish))
+            if use_bn:
+                layers.append(tf.keras.layers.BatchNormalization())
+            if dropout > 0:
+                layers.append(tf.keras.layers.Dropout(dropout))
+        if output_layer:
+            layers.append(tf.keras.layers.Dense(output_dim, activation=output_activation))
+        self.net = tf.keras.Sequential(layers)
+
+    def call(self, inputs, training=None):
+        return self.net(inputs, training=training)
+
 """"
 *******PLE*******
 """
@@ -231,4 +249,3 @@ class PLEModel(tf.keras.layers.Layer):
 class adatt(tf.keras.layers.Layer):
     def __init__(self, num_experts, num_tasks, expert_dim, task_dim, **kwargs):
         super(adatt, self).__init__(**kwargs)
-
