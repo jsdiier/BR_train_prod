@@ -1,0 +1,7 @@
+[INFO] BR_train_prod_bs_lr: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_amsgrad: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_amsgrad/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_buy_focal_loss: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_buy_focal_loss/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_global_grad_clip: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_global_grad_clip/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_mmoe_task_gate: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_mmoe_task_gate/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_rankmixer_blocks: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_rankmixer_blocks/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260819_165908/rolling_auc.html

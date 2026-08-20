@@ -1,0 +1,6 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_bs_lr_amsgrad	yes	yes	yes	yes	yes	yes
+BR_train_prod_bs_lr_buy_focal_loss	yes	yes	yes	yes	yes	yes
+BR_train_prod_bs_lr_global_grad_clip	yes	yes	yes	yes	yes	yes
+BR_train_prod_bs_lr_mmoe_task_gate	yes	yes	yes	yes	yes	yes
+BR_train_prod_bs_lr_rankmixer_blocks	yes	yes	yes	yes	yes	yes
