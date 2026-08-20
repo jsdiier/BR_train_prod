@@ -71,6 +71,7 @@ class MultiHeadDINAttention(tf.keras.layers.Layer):
         scores = tf.where(tf.equal(mask_expanded, 0), -1e9, scores)
         att = tf.nn.softmax(scores, axis=-1)
 
-        out = tf.reduce_sum(att * vh, axis=-2)
+        out = tf.matmul(att, vh)
+        out = tf.squeeze(out, axis=-2)
         out = tf.reshape(out, [batch_size, self.num_heads * self.head_dim])
         return out
