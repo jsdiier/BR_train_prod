@@ -1,0 +1,9 @@
+[INFO] BR_train_prod_bs_lr: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_igm_feature_cross: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_igm_feature_cross/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_lr_schedule_warmup: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_lr_schedule_warmup/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_ple_task_gate: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ple_task_gate/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_rankmixer_blocks4: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_rankmixer_blocks4/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_rankmixer_heads32: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_rankmixer_heads32/model/rolling_metrics.tsv
+[INFO] BR_train_prod_bs_lr_seq_attention_multihead: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_seq_attention_multihead/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260820_105305/rolling_auc.html
