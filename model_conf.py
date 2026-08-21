@@ -3,6 +3,7 @@
 train_mode = 'train'
 gpu_id = '0,'
 done_file_path = 'model/model.done'
+online_done_file_path = 'model/online_model.done'
 
 epoch_num = 1
 batch_size = 1024

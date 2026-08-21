@@ -22,8 +22,16 @@ checkpoint_dir() {
     echo "model/checkpoints/$1/"
 }
 
+online_checkpoint_dir() {
+    echo "model/online_checkpoints/$1/"
+}
+
 checkpoint_ready() {
     [[ -f "$(checkpoint_dir "$1")/checkpoint" ]]
+}
+
+online_checkpoint_ready() {
+    [[ -f "$(online_checkpoint_dir "$1")/checkpoint" ]]
 }
 
 assert_ready_day() {
@@ -52,16 +60,20 @@ run_train_range() {
     nowt=$(date +%Y%m%d%H%M%S)
     local train_args=(-data "$train_hdfs_dir" -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
     if [[ -n "$restore_day" ]]; then
-        if ! checkpoint_ready "$restore_day"; then
-            echo "restore checkpoint is not ready: $restore_day"
+        if ! online_checkpoint_ready "$restore_day"; then
+            echo "online restore checkpoint is not ready: $restore_day"
             exit 1
         fi
-        train_args+=( -checkpoint_path "$(checkpoint_dir "$restore_day")" )
+        train_args+=( -checkpoint_path "$(online_checkpoint_dir "$restore_day")" )
     fi
     CLASSPATH=$(${HADOOP_HDFS_HOME}/bin/hadoop classpath --glob) \
     $python -u train.py "${train_args[@]}" > "log/rolling_train_${start_day}_${end_day}_${nowt}" 2>&1
     if ! checkpoint_ready "$end_day"; then
-        echo "training finished but target checkpoint was not created: $end_day"
+        echo "training finished but target EMA evaluation checkpoint was not created: $end_day"
+        exit 1
+    fi
+    if ! online_checkpoint_ready "$end_day"; then
+        echo "training finished but target online checkpoint was not created: $end_day"
         exit 1
     fi
 }
@@ -98,14 +110,14 @@ if [[ "$auto_test_end_day" -lt "$first_rolling_test_day" ]]; then
 fi
 
 # Phase 1: reproduce the best baseline checkpoint and preserve the original fixed-window test.
-if ! checkpoint_ready "$train_end_day"; then
+if ! checkpoint_ready "$train_end_day" || ! online_checkpoint_ready "$train_end_day"; then
     run_train_range "$train_start_day" "$train_end_day"
 fi
 assert_ready_range "$test_start_day" "$test_end_day"
 run_test_window "$train_end_day" "$test_start_day" "$test_end_day"
 
 # Phase 2: consume the old fixed test window as training data and create the rolling seed checkpoint.
-if ! checkpoint_ready "$auto_test_start_ckpt_day"; then
+if ! checkpoint_ready "$auto_test_start_ckpt_day" || ! online_checkpoint_ready "$auto_test_start_ckpt_day"; then
     seed_train_start=$(date_next "$train_end_day")
     run_train_range "$seed_train_start" "$auto_test_start_ckpt_day" "$train_end_day"
 fi
@@ -117,7 +129,8 @@ while [[ "$test_day" -le "$auto_test_end_day" ]]; do
     assert_ready_day "$test_day"
     run_test_window "$ckpt_day" "$test_day" "$test_day"
 
-    if [[ "$test_day" -lt "$auto_test_end_day" ]] && ! checkpoint_ready "$test_day"; then
+    if [[ "$test_day" -lt "$auto_test_end_day" ]] && \
+       { ! checkpoint_ready "$test_day" || ! online_checkpoint_ready "$test_day"; }; then
         run_train_range "$test_day" "$test_day" "$ckpt_day"
     fi
 
