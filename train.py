@@ -10,6 +10,7 @@ import model_conf
 from model import Model
 from tensorflow.keras import regularizers
 import time
+import math
 from sklearn import metrics
 
 class Learner:
@@ -17,6 +18,7 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.ema_num_updates = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -40,6 +42,7 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
+            self.ema_num_updates.assign_add(1)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
     def _date_range(self, start, end):
@@ -106,7 +109,8 @@ class Learner:
                                      fetch_size=1, num_parallel=10)
         first_batch = next(iter(probe_ds))
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
+        self.ema_vars = [tf.Variable(tf.zeros_like(v), trainable=False) for v in model.trainable_weights]
+        self.ema_num_updates = tf.Variable(0, dtype=tf.int64, trainable=False)
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
@@ -264,11 +268,19 @@ class Learner:
                     tf.summary.scalar('eval_mae/%s' % t, mae, step=step)
         mfout.flush()
 
+    def _assign_bias_corrected_ema_weights(self):
+        if self.ema_vars is None or self.ema_num_updates is None:
+            return
+        num_updates = int(self.ema_num_updates.numpy())
+        if num_updates <= 0:
+            raise RuntimeError("cannot export bias-corrected EMA before the first training update")
+        normalizer = 1.0 - math.pow(self.ema_decay, num_updates)
+        for ema_v, w in zip(self.ema_vars, self.model.trainable_weights):
+            w.assign(ema_v / tf.cast(normalizer, ema_v.dtype))
+
     def save_checkpoint(self, day):
         model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
+        self._assign_bias_corrected_ema_weights()
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -292,9 +304,7 @@ class Learner:
             return
 
         train_model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, train_model.trainable_weights):
-                w.assign(ema_v)
+        self._assign_bias_corrected_ema_weights()
 
         fid_keys, fid_values = train_model.fid_table.export()
         fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
