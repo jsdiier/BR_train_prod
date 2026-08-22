@@ -84,7 +84,7 @@ class Learner:
         shuffle_size = batch_size * 10
 
         #load ckpt (需要先跑一个 batch 建好变量再 restore)
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
+        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.continuation_done_file_path)
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -266,6 +266,11 @@ class Learner:
 
     def save_checkpoint(self, day):
         model = self.model
+        online_save_dir = "%s/online_checkpoints/%s/" % (model_conf.local_model_dir, day)
+        online_export_dir = online_save_dir + "tfmodel"
+        online_ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        online_ckpt.save(online_export_dir)
+
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 w.assign(ema_v)
@@ -273,6 +278,46 @@ class Learner:
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
         ckpt.save(export_dir)
+
+        # Evaluation remains full-EMA. Continuation restores the online state,
+        # then synchronizes only non-embedding trainables to isolate the domain
+        # responsible for the baseline's rolling benefit.
+        online_ckpt.restore(tf.train.latest_checkpoint(online_save_dir)).assert_consumed()
+        embedding_ids = {
+            id(v) for v in (model.emb_fm.trainable_weights + model.emb_din_ads.trainable_weights)
+        }
+        dense_sync_count = 0
+        embedding_count = 0
+        for ema_v, w in zip(self.ema_vars, model.trainable_weights):
+            if id(w) in embedding_ids:
+                embedding_count += 1
+            else:
+                w.assign(ema_v)
+                dense_sync_count += 1
+        if embedding_count == 0 or dense_sync_count == 0:
+            raise RuntimeError(
+                "invalid EMA variable partition: embeddings=%d dense=%d" %
+                (embedding_count, dense_sync_count))
+
+        continuation_save_dir = "%s/continuation_checkpoints/%s/" % (
+            model_conf.local_model_dir, day)
+        continuation_export_dir = continuation_save_dir + "tfmodel"
+        continuation_ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        continuation_ckpt.save(continuation_export_dir)
+
+        continuation_done_dir = os.path.dirname(model_conf.continuation_done_file_path)
+        if continuation_done_dir and not os.path.exists(continuation_done_dir):
+            try:
+                os.makedirs(continuation_done_dir)
+            except Exception as e:
+                print("Warning: Failed to create continuation done_file directory %s:" %
+                      continuation_done_dir, e)
+        try:
+            with open(model_conf.continuation_done_file_path, 'a') as f:
+                f.write(day + "\t" + continuation_save_dir + "\n")
+        except Exception as e:
+            print("Warning: Failed to write continuation done file %s:" %
+                  model_conf.continuation_done_file_path, e)
 
         done_dir = os.path.dirname(model_conf.done_file_path)
         if done_dir and not os.path.exists(done_dir):
@@ -285,7 +330,12 @@ class Learner:
                 f.write(day + "\t" + save_dir + "\n")
         except Exception as e:
             print("Warning: Failed to write done file %s:" % model_conf.done_file_path, e)
-        print(datetime.datetime.now(), "saved checkpoint for day %s -> %s" % (day, save_dir))
+        print(datetime.datetime.now(), "saved full-EMA evaluation checkpoint for day %s -> %s" %
+              (day, save_dir))
+        print(datetime.datetime.now(),
+              "saved dense-only-sync continuation checkpoint for day %s -> %s "
+              "(embeddings=%d dense=%d)" %
+              (day, continuation_save_dir, embedding_count, dense_sync_count))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
