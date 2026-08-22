@@ -688,6 +688,7 @@ def ReadTFRecordV2(files, shuffle_size=1, batch_size=1, fetch_size=0, num_parall
             "add_info_list": tf.io.VarLenFeature(tf.string)
         }
         parsed = tf.io.parse_single_example(value, features)
+        parsed["domain_id"] = tf.constant(0, dtype=tf.int32)
         return parsed
 
     def parse_record_batch(value):
@@ -714,6 +715,55 @@ def ReadTFRecordV2(files, shuffle_size=1, batch_size=1, fetch_size=0, num_parall
         cycle_length=num_parallel,
         block_length=32
     )
+    dataset = dataset.map(parse_record, num_parallel_calls=num_parallel)
+    if shuffle_size > 1:
+        dataset = dataset.shuffle(shuffle_size)
+    if batch_size > 0:
+        dataset = dataset.batch(batch_size)
+    if fetch_size > 0:
+        dataset = dataset.prefetch(fetch_size)
+    return dataset
+
+
+def ReadMXTFRecordV2(files, shuffle_size=1, batch_size=1, fetch_size=0,
+                     num_parallel=10):
+    """Read MX records and normalize field names to the BR training schema."""
+    def parse_record(value):
+        features = {
+            "cvr_label": tf.io.FixedLenFeature([], tf.float32),
+            "cat_label": tf.io.FixedLenFeature([], tf.float32),
+            "clk_label": tf.io.FixedLenFeature([], tf.float32),
+            "ext_label": tf.io.FixedLenFeature([], tf.float32),
+            "sids": tf.io.VarLenFeature(tf.int64),
+            "fids": tf.io.VarLenFeature(tf.int64),
+            "add_infos": tf.io.VarLenFeature(tf.string),
+        }
+        parsed = tf.io.parse_single_example(value, features)
+        return {
+            "cvr_label": parsed["cvr_label"],
+            "cat_label": parsed["cat_label"],
+            "clk_label": parsed["clk_label"],
+            "ext_label": parsed["ext_label"],
+            "fea_ids": parsed["sids"],
+            "fea_vals": parsed["fids"],
+            "add_info_list": parsed["add_infos"],
+            "domain_id": tf.constant(1, dtype=tf.int32),
+        }
+
+    if ',' in files:
+        files = files.split(',')
+    if not isinstance(files, (list, tuple)):
+        files = [files]
+    tf_data_files = tf.data.Dataset.from_tensor_slices(files)
+    dataset = tf_data_files.interleave(
+        map_func=lambda x: tf.data.TFRecordDataset(
+            x,
+            buffer_size=100000000,
+            num_parallel_reads=4,
+            compression_type="GZIP"),
+        num_parallel_calls=num_parallel,
+        cycle_length=num_parallel,
+        block_length=32)
     dataset = dataset.map(parse_record, num_parallel_calls=num_parallel)
     if shuffle_size > 1:
         dataset = dataset.shuffle(shuffle_size)

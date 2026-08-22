@@ -28,6 +28,28 @@ class Learner:
         files = sorted(files)
         return files
 
+    @staticmethod
+    def _restore_multidomain_checkpoint(ckpt, checkpoint_dir):
+        latest_checkpoint = tf.train.latest_checkpoint(checkpoint_dir)
+        if latest_checkpoint is None:
+            raise RuntimeError(
+                "no TensorFlow checkpoint found under %s" % checkpoint_dir)
+        checkpoint_names = [
+            name for name, _ in tf.train.list_variables(latest_checkpoint)
+        ]
+        is_multidomain = any(
+            'mx_input_adapter' in name or 'shared_fusion' in name
+            for name in checkpoint_names
+        )
+        status = ckpt.restore(latest_checkpoint)
+        if is_multidomain:
+            status.assert_consumed()
+        else:
+            status.expect_partial()
+            print("testing a BR-only initialization checkpoint; MX/shared "
+                  "variables remain initialized")
+        return latest_checkpoint
+
     def train(self, train_data, model_path=None, data_path=None):
         if self.model is None:
             self.model = Model(training=True)
@@ -46,14 +68,15 @@ class Learner:
 
             first_batch = next(iter(train_data))
             _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
+            model.initialize_mx_path()
 
             dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
             model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
 
-            #ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).expect_partial()
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            restored_checkpoint = self._restore_multidomain_checkpoint(
+                ckpt, ckpt_path)
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
-            print("load checkpoint path: ", ckpt_path)
+            print("load checkpoint path: ", restored_checkpoint)
 
         buy_weight = 1.0
         cat_weight = 1.0

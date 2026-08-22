@@ -64,7 +64,8 @@ eday=`date -d"$train_end_day" +%Y%m%d`
 HADOOP_HDFS_HOME=/usr/local/hadoop-current
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HADOOP_HDFS_HOME/lib/native:${JAVA_HOME}/jre/lib/amd64/server
 CLASSPATH=$(${HADOOP_HDFS_HOME}/bin/hadoop classpath --glob) \
-$python -u train.py -data $train_hdfs_dir -start_day $bday -end_day $eday
+$python -u train.py -data "$train_hdfs_dir" -mx_data "$mx_train_hdfs_dir" \
+    -start_day "$bday" -end_day "$eday"
 
 if [ $? -eq 0 ]; then
     if [ $is_auto_train -eq 1 ];then

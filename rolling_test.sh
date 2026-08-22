@@ -44,13 +44,28 @@ assert_ready_range() {
     done
 }
 
+assert_mx_ready_range() {
+    local day=$1
+    local end_day=$2
+    while [[ "$day" -le "$end_day" ]]; do
+        local success_path="${mx_train_hdfs_dir}/${day}/_SUCCESS"
+        if ! $hadoop fs -test -e "$success_path"; then
+            echo "MX training data day is not ready: $day ($success_path)"
+            exit 1
+        fi
+        day=$(date_next "$day")
+    done
+}
+
 run_train_range() {
     local start_day=$1
     local end_day=$2
     local restore_day=${3:-}
     local nowt
     nowt=$(date +%Y%m%d%H%M%S)
-    local train_args=(-data "$train_hdfs_dir" -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
+    assert_mx_ready_range "$start_day" "$end_day"
+    local train_args=(-data "$train_hdfs_dir" -mx_data "$mx_train_hdfs_dir" \
+        -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
     if [[ -n "$restore_day" ]]; then
         if ! checkpoint_ready "$restore_day"; then
             echo "restore checkpoint is not ready: $restore_day"

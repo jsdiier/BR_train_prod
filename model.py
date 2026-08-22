@@ -8,15 +8,18 @@ from tensorflow.python.framework import sparse_tensor
 from module.rankmixer_v4 import *
 from logger import logger
 from module.seq_attention import *
+from module.multidomain import MXInputAdapter
 
 
 class Model(tf.keras.Model):
-    def __init__(self, training=False, pred=False, fid_kv=None, fid_ads_kv=None, l2_reg=0.0001):
+    def __init__(self, training=False, pred=False, fid_kv=None, fid_ads_kv=None,
+                 l2_reg=0.0001, enable_mx=True):
         super(Model, self).__init__()
 
         self.is_save_model = False
         self.training = training
         self.pred = pred
+        self.enable_mx = enable_mx
         self.dropout_dim = []
         self.use_bn = model_conf.use_bn
 
@@ -165,6 +168,72 @@ class Model(tf.keras.Model):
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
         self.dense_concat3 = tf.keras.layers.Dense(1, activation="sigmoid",
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+
+        # A residual shared trunk is the only high-level parameter path updated
+        # by both countries. Input namespaces and task calibration remain
+        # country-specific.
+        self.shared_fusion_dense = tf.keras.layers.Dense(
+            model_conf.shared_fusion_dim, activation=tf.nn.swish,
+            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
+            name='shared_fusion_dense')
+        self.shared_fusion_ln = tf.keras.layers.LayerNormalization(
+            axis=-1, epsilon=1e-5, name='shared_fusion_ln')
+
+        if self.enable_mx:
+            self.mx_input_adapter = MXInputAdapter(
+                model_conf.mx_all_slot_ids,
+                feature_size=model_conf.mx_feature_size,
+                num_buckets=model_conf.mx_num_buckets,
+                embedding_dim=model_conf.lr_emb_size + model_conf.fm_emb_size,
+                latent_dim=model_conf.mx_latent_dim)
+            self.mx_buy_tower = self._make_mx_tower('mx_buy_tower')
+            self.mx_cat_tower = self._make_mx_tower('mx_cat_tower')
+            self.mx_click_tower = self._make_mx_tower('mx_click_tower')
+            self.mx_ext_tower = self._make_mx_tower('mx_ext_tower')
+            self.mx_buy_head = tf.keras.layers.Dense(
+                1, activation='sigmoid', name='mx_buy_head')
+            self.mx_cat_head = tf.keras.layers.Dense(
+                1, activation='sigmoid', name='mx_cat_head')
+            self.mx_click_head = tf.keras.layers.Dense(
+                1, activation='sigmoid', name='mx_click_head')
+            self.mx_ext_head = tf.keras.layers.Dense(
+                1, activation='sigmoid', name='mx_ext_head')
+
+    def _make_mx_tower(self, name):
+        layers = []
+        if self.use_bn:
+            layers.append(tf.keras.layers.BatchNormalization(name=name + '_bn'))
+        layers.append(tf.keras.layers.Dense(
+            256, activation=tf.nn.swish,
+            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
+            name=name + '_dense'))
+        return tf.keras.Sequential(layers, name=name)
+
+    def _shared_fusion(self, representation):
+        return self.shared_fusion_ln(
+            representation + self.shared_fusion_dense(representation))
+
+    def _call_mx(self, inputs):
+        if not self.enable_mx:
+            raise RuntimeError('MX path is disabled in the BR serving model')
+        representation = self.mx_input_adapter(inputs, training=self.training)
+        representation = self._shared_fusion(representation)
+        buy = self.mx_buy_head(self.mx_buy_tower(
+            representation, training=self.training))
+        cat = self.mx_cat_head(self.mx_cat_tower(
+            representation, training=self.training))
+        click = self.mx_click_head(self.mx_click_tower(
+            representation, training=self.training))
+        ext = self.mx_ext_head(self.mx_ext_tower(
+            representation, training=self.training))
+        return click * buy, cat, click, ext
+
+    def initialize_mx_path(self):
+        if not self.enable_mx:
+            return
+        sid = tf.constant([[model_conf.mx_all_slot_ids[0]]], dtype=tf.int64)
+        fid = tf.constant([[1]], dtype=tf.int64)
+        self._call_mx([sid, fid])
 
     def set_summary_writer(self, writer, histogram_freq=100):
         self.summary_writer = writer
@@ -446,7 +515,9 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, domain='br'):
+        if domain == 'mx':
+            return self._call_mx(inputs)
         sids, fids = inputs
         step = self.optimizer.iterations
 
@@ -576,6 +647,7 @@ class Model(tf.keras.Model):
         rankmixer_output = self.rankmixer(deep_input)
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
+        concat = self._shared_fusion(concat)
 
         buy_tower_output = self.buy_tower(concat, training=self.training)
         cat_tower_output = self.cat_tower(concat, training=self.training)
@@ -600,4 +672,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-
