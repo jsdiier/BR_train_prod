@@ -269,6 +269,7 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 w.assign(ema_v)
+        self._reset_adam_moments_after_ema_sync()
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -286,6 +287,40 @@ class Learner:
         except Exception as e:
             print("Warning: Failed to write done file %s:" % model_conf.done_file_path, e)
         print(datetime.datetime.now(), "saved checkpoint for day %s -> %s" % (day, save_dir))
+
+    def _reset_adam_moments_after_ema_sync(self):
+        """Reset Adam m/v slots after the model jumps to EMA weights.
+
+        The optimizer iteration is intentionally preserved so the inverse-time
+        learning-rate schedule remains identical to the evaluation baseline.
+        """
+        model = self.model
+        optimizer = model.optimizer
+        if not hasattr(optimizer, 'get_slot'):
+            raise RuntimeError(
+                "Adam optimizer does not expose get_slot; refusing to reset "
+                "moments without an exact variable-to-slot mapping")
+
+        reset_slots = []
+        for weight in model.trainable_weights:
+            for slot_name in ('m', 'v'):
+                slot = optimizer.get_slot(weight, slot_name)
+                if slot is None:
+                    raise RuntimeError(
+                        "missing Adam %s slot for trainable weight %s" %
+                        (slot_name, weight.name))
+                slot.assign(tf.zeros_like(slot))
+                reset_slots.append(slot)
+
+        expected = len(model.trainable_weights) * 2
+        if len(reset_slots) != expected:
+            raise RuntimeError(
+                "Adam moment reset count mismatch: expected=%d actual=%d" %
+                (expected, len(reset_slots)))
+        print(datetime.datetime.now(),
+              "reset Adam moments after EMA sync: trainables=%d slots=%d iteration=%d" %
+              (len(model.trainable_weights), len(reset_slots),
+               int(optimizer.iterations.numpy())))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
