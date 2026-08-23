@@ -1,6 +1,7 @@
 import utils as ut
 import argparse
 import copy
+import itertools
 import sys, os
 import numpy as np
 import tensorflow as tf
@@ -184,6 +185,10 @@ class Learner:
         first_mx_batch = None
         missing_br_days = []
         missing_mx_days = []
+        unreadable_br_days = []
+        unreadable_mx_days = []
+        readable_br_days = set()
+        readable_mx_days = set()
         joint_days = 0
         configured_mx_slots = set(model_conf.mx_all_slot_ids)
         for day in days:
@@ -198,11 +203,17 @@ class Learner:
             br_probe = ut.ReadTFRecordV2(
                 br_files, shuffle_size=1, batch_size=batch_size,
                 fetch_size=1, num_parallel=10)
+            br_probe = br_probe.apply(
+                tf.data.experimental.ignore_errors())
             try:
                 br_batch = next(iter(br_probe))
             except (StopIteration, tf.errors.OpError) as error:
-                raise RuntimeError(
-                    "preflight could not parse BR day %s: %s" % (day, error))
+                unreadable_br_days.append(day)
+                print(
+                    "multidomain preflight day=%s BR_files=%d MX_files=%d "
+                    "action=skip_day reason=BR_unreadable error=%s" %
+                    (day, len(br_files), len(mx_files), error))
+                continue
 
             br_domains = set(
                 int(value) for value in br_batch['domain_id'].numpy())
@@ -215,6 +226,7 @@ class Learner:
 
             if first_br_batch is None:
                 first_br_batch = br_batch
+            readable_br_days.add(day)
 
             if not mx_files:
                 missing_mx_days.append(day)
@@ -228,11 +240,17 @@ class Learner:
             mx_probe = ut.ReadMXTFRecordV2(
                 mx_files, shuffle_size=1, batch_size=batch_size,
                 fetch_size=1, num_parallel=10)
+            mx_probe = mx_probe.apply(
+                tf.data.experimental.ignore_errors())
             try:
                 mx_batch = next(iter(mx_probe))
             except (StopIteration, tf.errors.OpError) as error:
-                raise RuntimeError(
-                    "preflight could not parse MX day %s: %s" % (day, error))
+                unreadable_mx_days.append(day)
+                print(
+                    "multidomain preflight day=%s BR_files=%d MX_files=%d "
+                    "action=BR_only reason=MX_unreadable error=%s" %
+                    (day, len(br_files), len(mx_files), error))
+                continue
             mx_domains = set(
                 int(value) for value in mx_batch['domain_id'].numpy())
             if mx_domains != {1}:
@@ -257,6 +275,7 @@ class Learner:
                  len(mx_slots), len(consumed_mx_slots),
                  len(configured_mx_slots), model_conf.mx_feature_size))
             joint_days += 1
+            readable_mx_days.add(day)
             if first_mx_batch is None:
                 first_mx_batch = mx_batch
         if first_br_batch is None:
@@ -264,12 +283,17 @@ class Learner:
                 "initial training range contains no BR data at all")
         print("multidomain preflight summary: total_days=%d joint_days=%d "
               "skipped_BR_days=%d BR_only_days=%d missing_BR_days=%s "
-              "missing_MX_days=%s" %
-              (len(days), joint_days, len(missing_br_days),
-               len(missing_mx_days),
+              "missing_MX_days=%s unreadable_BR_days=%s "
+              "unreadable_MX_days=%s" %
+              (len(days), joint_days,
+               len(missing_br_days) + len(unreadable_br_days),
+               len(missing_mx_days) + len(unreadable_mx_days),
                ','.join(missing_br_days) if missing_br_days else 'none',
-               ','.join(missing_mx_days) if missing_mx_days else 'none'))
-        return first_br_batch, first_mx_batch
+               ','.join(missing_mx_days) if missing_mx_days else 'none',
+               ','.join(unreadable_br_days) if unreadable_br_days else 'none',
+               ','.join(unreadable_mx_days) if unreadable_mx_days else 'none'))
+        return (first_br_batch, first_mx_batch, readable_br_days,
+                readable_mx_days)
 
     def train(self, data_arg, mx_data_arg, start_day, end_day, model_path=None,
               data_path=None, dump_serving_model=True):
@@ -296,8 +320,9 @@ class Learner:
 
         # Validate every BR day and every available MX day before the expensive
         # pass, then build both domains before checkpoint restore.
-        first_batch, first_mx_batch = self._preflight_training_days(
-            data_arg, mx_data_arg, days, batch_size)
+        (first_batch, first_mx_batch, readable_br_days,
+         readable_mx_days) = self._preflight_training_days(
+             data_arg, mx_data_arg, days, batch_size)
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
         if first_mx_batch is not None:
             _ = model([first_mx_batch['fea_ids'], first_mx_batch['fea_vals']],
@@ -346,11 +371,15 @@ class Learner:
         for idx, day in enumerate(days):
             files = self.get_day_files(data_arg, day)
             mx_files = self.get_day_files(mx_data_arg, day)
-            if not files:
+            if not files or day not in readable_br_days:
                 print(datetime.datetime.now(),
-                      "day %s: BR_files=0 MX_files=%d, skip whole day" %
-                      (day, len(mx_files)))
+                      "day %s: BR_files=%d BR_readable=%s MX_files=%d, "
+                      "skip whole day" %
+                      (day, len(files), day in readable_br_days,
+                       len(mx_files)))
                 continue
+            if day not in readable_mx_days:
+                mx_files = []
             training_mode = 'BR_MX_1to1' if mx_files else 'BR_only'
             print(datetime.datetime.now(),
                   "==== start day %s (%d/%d), BR_files=%d MX_files=%d "
@@ -361,10 +390,18 @@ class Learner:
             #train one pass over this day(训练完当天直接算指标写入 metrics 文件)
             self.set_training_mode(True, False)
             ds = ut.ReadTFRecordV2(files, shuffle_size=shuffle_size, batch_size=batch_size, fetch_size=10, num_parallel=10)
+            ds = ds.apply(tf.data.experimental.ignore_errors())
             mx_ds = (ut.ReadMXTFRecordV2(
                 mx_files, shuffle_size=shuffle_size, batch_size=batch_size,
-                fetch_size=10, num_parallel=10) if mx_files else None)
-            self.train_one_day(ds, mx_ds, day, train_writer, mfout)
+                fetch_size=10, num_parallel=10).apply(
+                    tf.data.experimental.ignore_errors()) if mx_files else None)
+            day_trained = self.train_one_day(
+                ds, mx_ds, day, train_writer, mfout)
+            if not day_trained:
+                print(datetime.datetime.now(),
+                      "day %s produced no readable BR batches, "
+                      "skip whole day" % day)
+                continue
             trained_days += 1
             last_trained_day = day
 
@@ -412,11 +449,21 @@ class Learner:
         n_sampled = 0
         observed_br_slots = set()
         observed_mx_slots = set()
-        has_mx = mx_train_data is not None
-        if has_mx:
-            train_iterator = zip(train_data, mx_train_data.repeat())
-            training_mode = 'BR_MX_1to1'
-        else:
+        has_mx = False
+        if mx_train_data is not None:
+            mx_iterator = iter(mx_train_data.repeat())
+            try:
+                first_mx_feat = next(mx_iterator)
+                has_mx = True
+                train_iterator = zip(
+                    train_data,
+                    itertools.chain((first_mx_feat,), mx_iterator))
+                training_mode = 'BR_MX_1to1'
+            except (StopIteration, tf.errors.OpError) as error:
+                print(datetime.datetime.now(),
+                      "day %s MX dataset produced no readable batches; "
+                      "fall back to BR_only: %s" % (day, error))
+        if not has_mx:
             train_iterator = ((feat, None) for feat in train_data)
             training_mode = 'BR_only'
         step = -1
@@ -484,7 +531,7 @@ class Learner:
                         tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
 
         if step < 0:
-            raise RuntimeError("day %s produced no BR batches" % day)
+            return False
 
         configured_mx_slots = set(model_conf.mx_all_slot_ids)
         consumed_mx_slots = observed_mx_slots.intersection(configured_mx_slots)
@@ -498,6 +545,7 @@ class Learner:
         #当天训练完成后直接算 auc/gauc/mae,把结果写到 metrics 文件
         if mfout is not None:
             self._write_day_metrics(day, eval_uids, eval_labels, eval_preds, mfout, train_writer)
+        return True
 
     def _write_day_metrics(self, day, uids, labels_by_task, preds_by_task, mfout, train_writer=None):
         """用当天内存里的采样子集算 auc/gauc/mae,结果写入 metrics 文件(+TensorBoard)。"""
