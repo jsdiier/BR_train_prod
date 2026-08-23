@@ -123,6 +123,39 @@ class Learner:
         return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
                 pred_buy, pred_cat, pred_click, pred_ext, mx_loss)
 
+    @tf.function(experimental_relax_shapes=True)
+    def train_step_br_only(self, feat, buy_weight=1.0, cat_weight=1.0,
+                           click_weight=1.0, ext_weight=1.0):
+        """Preserve the complete BR stream when the same-day MX partition is absent."""
+        model = self.model
+        with tf.GradientTape() as tape:
+            pred_buy, pred_cat, pred_click, pred_ext = model(
+                [feat['fea_ids'], feat['fea_vals']])
+            loss_buy = model.loss_bc(
+                tf.expand_dims(feat['cvr_label'], 1), pred_buy)
+            loss_cat = model.loss_bc(
+                tf.expand_dims(feat['cat_label'], 1), pred_cat)
+            loss_click = model.loss_bc(
+                tf.expand_dims(feat['clk_label'], 1), pred_click)
+            loss_ext = model.loss_bc(
+                tf.expand_dims(feat['ext_label'], 1), pred_ext)
+            final_loss = (loss_buy * buy_weight + loss_cat * cat_weight +
+                          loss_click * click_weight + loss_ext * ext_weight)
+
+        variables = model.trainable_weights
+        gradients = tape.gradient(final_loss, variables)
+        model.optimizer.apply_gradients([
+            (gradient, weight)
+            for gradient, weight in zip(gradients, variables)
+            if gradient is not None
+        ])
+        if self.ema_vars is not None:
+            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
+                ema_v.assign(
+                    self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext)
+
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
         d = datetime.datetime.strptime(start, "%Y%m%d")
@@ -146,40 +179,62 @@ class Learner:
 
     def _preflight_training_days(self, data_arg, mx_data_arg, days,
                                  batch_size):
-        """Fail fast on date/schema/slot availability before full training."""
+        """Validate BR daily; missing MX partitions explicitly fall back to BR-only."""
         first_br_batch = None
         first_mx_batch = None
+        missing_mx_days = []
+        joint_days = 0
         configured_mx_slots = set(model_conf.mx_all_slot_ids)
         for day in days:
             br_files = self.get_day_files(data_arg, day)
             mx_files = self.get_day_files(mx_data_arg, day)
-            if not br_files or not mx_files:
+            if not br_files:
                 raise RuntimeError(
-                    "preflight missing same-day data: day=%s BR_files=%d "
-                    "MX_files=%d" % (day, len(br_files), len(mx_files)))
+                    "preflight missing required BR data: day=%s" % day)
             br_probe = ut.ReadTFRecordV2(
                 br_files, shuffle_size=1, batch_size=batch_size,
                 fetch_size=1, num_parallel=10)
+            try:
+                br_batch = next(iter(br_probe))
+            except (StopIteration, tf.errors.OpError) as error:
+                raise RuntimeError(
+                    "preflight could not parse BR day %s: %s" % (day, error))
+
+            br_domains = set(
+                int(value) for value in br_batch['domain_id'].numpy())
+            if br_domains != {0}:
+                raise RuntimeError(
+                    "preflight BR domain routing mismatch: day=%s BR=%s" %
+                    (day, sorted(br_domains)))
+            br_slots = set(
+                int(value) for value in br_batch['fea_ids'].values.numpy())
+
+            if first_br_batch is None:
+                first_br_batch = br_batch
+
+            if not mx_files:
+                missing_mx_days.append(day)
+                print(
+                    "multidomain preflight day=%s BR_files=%d MX_files=0 "
+                    "BR_probe_samples=%d BR_probe_slots=%d action=BR_only" %
+                    (day, len(br_files),
+                     int(br_batch['cvr_label'].shape[0]), len(br_slots)))
+                continue
+
             mx_probe = ut.ReadMXTFRecordV2(
                 mx_files, shuffle_size=1, batch_size=batch_size,
                 fetch_size=1, num_parallel=10)
             try:
-                br_batch = next(iter(br_probe))
                 mx_batch = next(iter(mx_probe))
             except (StopIteration, tf.errors.OpError) as error:
                 raise RuntimeError(
-                    "preflight could not parse day %s: %s" % (day, error))
-
-            br_domains = set(
-                int(value) for value in br_batch['domain_id'].numpy())
+                    "preflight could not parse MX day %s: %s" % (day, error))
             mx_domains = set(
                 int(value) for value in mx_batch['domain_id'].numpy())
-            if br_domains != {0} or mx_domains != {1}:
+            if mx_domains != {1}:
                 raise RuntimeError(
-                    "preflight domain routing mismatch: day=%s BR=%s MX=%s" %
-                    (day, sorted(br_domains), sorted(mx_domains)))
-            br_slots = set(
-                int(value) for value in br_batch['fea_ids'].values.numpy())
+                    "preflight MX domain routing mismatch: day=%s MX=%s" %
+                    (day, sorted(mx_domains)))
             mx_slots = set(
                 int(value) for value in mx_batch['fea_ids'].values.numpy())
             consumed_mx_slots = mx_slots.intersection(configured_mx_slots)
@@ -197,9 +252,13 @@ class Learner:
                  int(mx_batch['cvr_label'].shape[0]), len(br_slots),
                  len(mx_slots), len(consumed_mx_slots),
                  len(configured_mx_slots), model_conf.mx_feature_size))
-            if first_br_batch is None:
-                first_br_batch = br_batch
+            joint_days += 1
+            if first_mx_batch is None:
                 first_mx_batch = mx_batch
+        print("multidomain preflight summary: total_days=%d joint_days=%d "
+              "BR_only_days=%d missing_MX_days=%s" %
+              (len(days), joint_days, len(missing_mx_days),
+               ','.join(missing_mx_days) if missing_mx_days else 'none'))
         return first_br_batch, first_mx_batch
 
     def train(self, data_arg, mx_data_arg, start_day, end_day, model_path=None,
@@ -222,15 +281,25 @@ class Learner:
 
         batch_size = model_conf.batch_size
         shuffle_size = batch_size * 10
+        ckpt_path = model_path or self.get_model_checkpoint_from_file(
+            model_conf.done_file_path)
 
-        # Validate every requested same-day pair before the expensive pass,
-        # then build both domains before checkpoint restore.
+        # Validate every BR day and every available MX day before the expensive
+        # pass, then build both domains before checkpoint restore.
         first_batch, first_mx_batch = self._preflight_training_days(
             data_arg, mx_data_arg, days, batch_size)
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        _ = model([first_mx_batch['fea_ids'], first_mx_batch['fea_vals']], domain='mx')
+        if first_mx_batch is not None:
+            _ = model([first_mx_batch['fea_ids'], first_mx_batch['fea_vals']],
+                      domain='mx')
+        elif ckpt_path is not None:
+            # A one-day rolling range can legitimately be BR-only; build the
+            # MX variables before strictly restoring the multidomain ckpt.
+            model.initialize_mx_path()
+        else:
+            raise RuntimeError(
+                "initial training range contains no MX data at all")
 
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -265,20 +334,22 @@ class Learner:
         for idx, day in enumerate(days):
             files = self.get_day_files(data_arg, day)
             mx_files = self.get_day_files(mx_data_arg, day)
-            if not files or not mx_files:
+            if not files:
                 raise RuntimeError(
-                    "missing same-day data: day=%s BR_files=%d MX_files=%d" %
-                    (day, len(files), len(mx_files)))
+                    "missing required BR data: day=%s" % day)
+            training_mode = 'BR_MX_1to1' if mx_files else 'BR_only'
             print(datetime.datetime.now(),
-                  "==== start day %s (%d/%d), BR_files=%d MX_files=%d ====" %
-                  (day, idx + 1, len(days), len(files), len(mx_files)))
+                  "==== start day %s (%d/%d), BR_files=%d MX_files=%d "
+                  "mode=%s ====" %
+                  (day, idx + 1, len(days), len(files), len(mx_files),
+                   training_mode))
 
             #train one pass over this day(训练完当天直接算指标写入 metrics 文件)
             self.set_training_mode(True, False)
             ds = ut.ReadTFRecordV2(files, shuffle_size=shuffle_size, batch_size=batch_size, fetch_size=10, num_parallel=10)
-            mx_ds = ut.ReadMXTFRecordV2(
+            mx_ds = (ut.ReadMXTFRecordV2(
                 mx_files, shuffle_size=shuffle_size, batch_size=batch_size,
-                fetch_size=10, num_parallel=10)
+                fetch_size=10, num_parallel=10) if mx_files else None)
             self.train_one_day(ds, mx_ds, day, train_writer, mfout)
 
             #当天训练的 summary 落盘
@@ -315,20 +386,34 @@ class Learner:
         n_sampled = 0
         observed_br_slots = set()
         observed_mx_slots = set()
+        has_mx = mx_train_data is not None
+        if has_mx:
+            train_iterator = zip(train_data, mx_train_data.repeat())
+            training_mode = 'BR_MX_1to1'
+        else:
+            train_iterator = ((feat, None) for feat in train_data)
+            training_mode = 'BR_only'
         step = -1
-        for step, (feat, mx_feat) in enumerate(zip(train_data, mx_train_data.repeat())):
+        for step, (feat, mx_feat) in enumerate(train_iterator):
             label_arrs = [np.reshape(feat[k].numpy(), [-1]) for k in label_keys]
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
-             pred_buy, pred_cat, pred_click, pred_ext, mx_loss) = self.train_step(
-                feat, mx_feat)
+            if has_mx:
+                (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                 pred_buy, pred_cat, pred_click, pred_ext,
+                 mx_loss) = self.train_step(feat, mx_feat)
+            else:
+                (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                 pred_buy, pred_cat, pred_click,
+                 pred_ext) = self.train_step_br_only(feat)
+                mx_loss = None
 
             observed_br_slots.update(
                 int(value) for value in feat['fea_ids'].values.numpy())
-            observed_mx_slots.update(
-                int(value) for value in mx_feat['fea_ids'].values.numpy())
+            if has_mx:
+                observed_mx_slots.update(
+                    int(value) for value in mx_feat['fea_ids'].values.numpy())
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -361,7 +446,8 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
-                    tf.summary.scalar('loss/mx_total', tf.reduce_mean(mx_loss), step=global_step)
+                    if has_mx:
+                        tf.summary.scalar('loss/mx_total', tf.reduce_mean(mx_loss), step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
@@ -372,14 +458,14 @@ class Learner:
                         tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
 
         if step < 0:
-            raise RuntimeError("day %s produced no paired BR/MX batches" % day)
+            raise RuntimeError("day %s produced no BR batches" % day)
 
         configured_mx_slots = set(model_conf.mx_all_slot_ids)
         consumed_mx_slots = observed_mx_slots.intersection(configured_mx_slots)
         print(datetime.datetime.now(),
-              "multidomain day=%s paired_batches=%d BR_observed_slots=%d "
+              "multidomain day=%s mode=%s batches=%d BR_observed_slots=%d "
               "MX_observed_slots=%d MX_consumed_slots=%d/%d MX_unique_fids=%d" %
-              (day, step + 1, len(observed_br_slots), len(observed_mx_slots),
+              (day, training_mode, step + 1, len(observed_br_slots), len(observed_mx_slots),
                len(consumed_mx_slots), len(configured_mx_slots),
                int(model.mx_input_adapter.observed_fid_count().numpy())))
 

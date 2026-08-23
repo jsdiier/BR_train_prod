@@ -44,28 +44,12 @@ assert_ready_range() {
     done
 }
 
-assert_mx_ready_range() {
-    local day=$1
-    local end_day=$2
-    while [[ "$day" -le "$end_day" ]]; do
-        # MX production directories do not consistently publish _SUCCESS.
-        # Match the train.py readiness contract: at least one part file exists.
-        local data_pattern="${mx_train_hdfs_dir%/}/${day}/part*"
-        if ! $hadoop fs -ls "$data_pattern" >/dev/null 2>&1; then
-            echo "MX training data day has no part files: $day ($data_pattern)"
-            exit 1
-        fi
-        day=$(date_next "$day")
-    done
-}
-
 run_train_range() {
     local start_day=$1
     local end_day=$2
     local restore_day=${3:-}
     local nowt
     nowt=$(date +%Y%m%d%H%M%S)
-    assert_mx_ready_range "$start_day" "$end_day"
     local train_args=(-data "$train_hdfs_dir" -mx_data "$mx_train_hdfs_dir" \
         -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
     if [[ -n "$restore_day" ]]; then
