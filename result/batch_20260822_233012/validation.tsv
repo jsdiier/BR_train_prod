@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_ema_br_mx_multidomain_fusion	no	no	no	no	no	no
+BR_train_prod_ema_dense_only_continuation_sync	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_embedding_only_continuation_sync	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_sync_reset_adam_moments	yes	yes	yes	yes	yes	yes
