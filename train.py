@@ -280,24 +280,25 @@ class Learner:
         ckpt.save(export_dir)
 
         # Evaluation remains full-EMA. Continuation restores the online state,
-        # then synchronizes only non-embedding trainables to isolate the domain
-        # responsible for the baseline's rolling benefit.
+        # then moves every non-embedding trainable halfway toward its EMA
+        # shadow. Embeddings and Adam optimizer state remain untouched.
         online_ckpt.restore(tf.train.latest_checkpoint(online_save_dir)).assert_consumed()
         embedding_ids = {
             id(v) for v in (model.emb_fm.trainable_weights + model.emb_din_ads.trainable_weights)
         }
-        dense_sync_count = 0
+        interpolation_alpha = 0.5
+        partial_dense_sync_count = 0
         embedding_count = 0
         for ema_v, w in zip(self.ema_vars, model.trainable_weights):
             if id(w) in embedding_ids:
                 embedding_count += 1
             else:
-                w.assign(ema_v)
-                dense_sync_count += 1
-        if embedding_count == 0 or dense_sync_count == 0:
+                w.assign(w + interpolation_alpha * (ema_v - w))
+                partial_dense_sync_count += 1
+        if embedding_count == 0 or partial_dense_sync_count == 0:
             raise RuntimeError(
                 "invalid EMA variable partition: embeddings=%d dense=%d" %
-                (embedding_count, dense_sync_count))
+                (embedding_count, partial_dense_sync_count))
 
         continuation_save_dir = "%s/continuation_checkpoints/%s/" % (
             model_conf.local_model_dir, day)
@@ -333,9 +334,10 @@ class Learner:
         print(datetime.datetime.now(), "saved full-EMA evaluation checkpoint for day %s -> %s" %
               (day, save_dir))
         print(datetime.datetime.now(),
-              "saved dense-only-sync continuation checkpoint for day %s -> %s "
-              "(embeddings=%d dense=%d)" %
-              (day, continuation_save_dir, embedding_count, dense_sync_count))
+              "saved partial-dense-sync continuation checkpoint for day %s "
+              "-> %s (alpha=%.2f embeddings_online=%d dense_interpolated=%d)" %
+              (day, continuation_save_dir, interpolation_alpha,
+               embedding_count, partial_dense_sync_count))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
