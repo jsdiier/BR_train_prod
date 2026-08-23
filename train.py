@@ -280,24 +280,46 @@ class Learner:
         ckpt.save(export_dir)
 
         # Evaluation remains full-EMA. Continuation restores the online state,
-        # then synchronizes only non-embedding trainables to isolate the domain
-        # responsible for the baseline's rolling benefit.
+        # then synchronizes only the shared representation. Embeddings and
+        # task-private towers/heads remain on their online trajectories.
         online_ckpt.restore(tf.train.latest_checkpoint(online_save_dir)).assert_consumed()
         embedding_ids = {
             id(v) for v in (model.emb_fm.trainable_weights + model.emb_din_ads.trainable_weights)
         }
-        dense_sync_count = 0
+        task_private_weights = (
+            model.buy_tower.trainable_weights +
+            model.cat_tower.trainable_weights +
+            model.click_tower.trainable_weights +
+            model.ext_tower.trainable_weights +
+            model.dense_concat.trainable_weights +
+            model.dense_concat1.trainable_weights +
+            model.dense_concat2.trainable_weights +
+            model.dense_concat3.trainable_weights
+        )
+        task_private_ids = {id(v) for v in task_private_weights}
+        if embedding_ids.intersection(task_private_ids):
+            raise RuntimeError("EMA variable groups overlap")
+
+        shared_sync_count = 0
+        task_private_count = 0
         embedding_count = 0
         for ema_v, w in zip(self.ema_vars, model.trainable_weights):
             if id(w) in embedding_ids:
                 embedding_count += 1
+            elif id(w) in task_private_ids:
+                task_private_count += 1
             else:
                 w.assign(ema_v)
-                dense_sync_count += 1
-        if embedding_count == 0 or dense_sync_count == 0:
+                shared_sync_count += 1
+        partition_count = embedding_count + task_private_count + shared_sync_count
+        if (embedding_count == 0 or task_private_count == 0 or
+                shared_sync_count == 0 or
+                partition_count != len(model.trainable_weights)):
             raise RuntimeError(
-                "invalid EMA variable partition: embeddings=%d dense=%d" %
-                (embedding_count, dense_sync_count))
+                "invalid EMA variable partition: embeddings=%d "
+                "task_private=%d shared=%d total=%d trainables=%d" %
+                (embedding_count, task_private_count, shared_sync_count,
+                 partition_count, len(model.trainable_weights)))
 
         continuation_save_dir = "%s/continuation_checkpoints/%s/" % (
             model_conf.local_model_dir, day)
@@ -333,9 +355,11 @@ class Learner:
         print(datetime.datetime.now(), "saved full-EMA evaluation checkpoint for day %s -> %s" %
               (day, save_dir))
         print(datetime.datetime.now(),
-              "saved dense-only-sync continuation checkpoint for day %s -> %s "
-              "(embeddings=%d dense=%d)" %
-              (day, continuation_save_dir, embedding_count, dense_sync_count))
+              "saved shared-representation-sync continuation checkpoint "
+              "for day %s -> %s (embeddings_online=%d "
+              "task_private_online=%d shared_synced=%d)" %
+              (day, continuation_save_dir, embedding_count,
+               task_private_count, shared_sync_count))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
