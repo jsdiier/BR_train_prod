@@ -120,7 +120,11 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        final_loss = 0.5 * (br_loss + mx_loss)
+        # BR and MX can have different-sized tail batches. Keep the existing
+        # independently computed/averaged gradient path unchanged, and reduce
+        # each per-example loss vector before combining the reporting scalar.
+        final_loss = 0.5 * (
+            tf.reduce_mean(br_loss) + tf.reduce_mean(mx_loss))
         return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
                 pred_buy, pred_cat, pred_click, pred_ext, mx_loss)
 
