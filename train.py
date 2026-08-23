@@ -182,6 +182,7 @@ class Learner:
         """Validate BR daily; missing MX partitions explicitly fall back to BR-only."""
         first_br_batch = None
         first_mx_batch = None
+        missing_br_days = []
         missing_mx_days = []
         joint_days = 0
         configured_mx_slots = set(model_conf.mx_all_slot_ids)
@@ -189,8 +190,11 @@ class Learner:
             br_files = self.get_day_files(data_arg, day)
             mx_files = self.get_day_files(mx_data_arg, day)
             if not br_files:
-                raise RuntimeError(
-                    "preflight missing required BR data: day=%s" % day)
+                missing_br_days.append(day)
+                print(
+                    "multidomain preflight day=%s BR_files=0 MX_files=%d "
+                    "action=skip_day" % (day, len(mx_files)))
+                continue
             br_probe = ut.ReadTFRecordV2(
                 br_files, shuffle_size=1, batch_size=batch_size,
                 fetch_size=1, num_parallel=10)
@@ -255,9 +259,15 @@ class Learner:
             joint_days += 1
             if first_mx_batch is None:
                 first_mx_batch = mx_batch
+        if first_br_batch is None:
+            raise RuntimeError(
+                "initial training range contains no BR data at all")
         print("multidomain preflight summary: total_days=%d joint_days=%d "
-              "BR_only_days=%d missing_MX_days=%s" %
-              (len(days), joint_days, len(missing_mx_days),
+              "skipped_BR_days=%d BR_only_days=%d missing_BR_days=%s "
+              "missing_MX_days=%s" %
+              (len(days), joint_days, len(missing_br_days),
+               len(missing_mx_days),
+               ','.join(missing_br_days) if missing_br_days else 'none',
                ','.join(missing_mx_days) if missing_mx_days else 'none'))
         return first_br_batch, first_mx_batch
 
@@ -331,12 +341,16 @@ class Learner:
         self.gstep = 0
 
         print('training...')
+        trained_days = 0
+        last_trained_day = None
         for idx, day in enumerate(days):
             files = self.get_day_files(data_arg, day)
             mx_files = self.get_day_files(mx_data_arg, day)
             if not files:
-                raise RuntimeError(
-                    "missing required BR data: day=%s" % day)
+                print(datetime.datetime.now(),
+                      "day %s: BR_files=0 MX_files=%d, skip whole day" %
+                      (day, len(mx_files)))
+                continue
             training_mode = 'BR_MX_1to1' if mx_files else 'BR_only'
             print(datetime.datetime.now(),
                   "==== start day %s (%d/%d), BR_files=%d MX_files=%d "
@@ -351,6 +365,8 @@ class Learner:
                 mx_files, shuffle_size=shuffle_size, batch_size=batch_size,
                 fetch_size=10, num_parallel=10) if mx_files else None)
             self.train_one_day(ds, mx_ds, day, train_writer, mfout)
+            trained_days += 1
+            last_trained_day = day
 
             #当天训练的 summary 落盘
             if train_writer is not None:
@@ -360,6 +376,16 @@ class Learner:
             is_last = (idx == len(days) - 1)
             if (idx + 1) % model_conf.ckpt_save_days == 0 or is_last:
                 self.save_checkpoint(day)
+
+        if trained_days == 0:
+            raise RuntimeError(
+                "training range contains no usable BR days")
+        if last_trained_day != end_day:
+            print(datetime.datetime.now(),
+                  "end day %s has no BR data; save the checkpoint trained "
+                  "through %s under target day %s" %
+                  (end_day, last_trained_day, end_day))
+            self.save_checkpoint(end_day)
 
         mfout.close()
         print(datetime.datetime.now(), "metrics written to %s" % metric_path)
