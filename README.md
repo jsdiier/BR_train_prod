@@ -1,5 +1,27 @@
 # luban
 
+## Experiment: negative-sampled BR training input
+
+This branch keeps the `BR_train_prod_baseline` model, optimizer, loss, slots,
+batch size (`512`), and learning rate (`0.001`) unchanged. Its research change
+is the upstream negative-sampled training source:
+
+`hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/shulan/BR/nearby/data/`
+
+For valid comparison with the current operational baseline, fixed and rolling
+tests always read the canonical unsampled BR source:
+
+`hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new/train/`
+
+`rolling_test.sh` therefore uses two separate data paths: sampled data for every
+training segment and canonical data for every evaluation window. The imported
+task-wise serving score multipliers remain unchanged; because they are positive
+constants and are serving-only, they do not alter the offline per-task AUC.
+
+Training keeps the imported `batch_size=512`. Fixed/rolling evaluation and the
+inference benchmark use `evaluation_batch_size=1024` so the benchmark protocol
+matches `BR_train_prod_bs_lr_ema_weights` and batch aggregation remains valid.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。
