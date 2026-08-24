@@ -5,8 +5,8 @@ gpu_id = '0,'
 done_file_path = 'model/model.done'
 
 epoch_num = 1
-batch_size = 1024
-learning_rate = 0.0003
+batch_size = 512
+learning_rate = 0.001
 l2_reg = 0.0001
 use_bn = True
 
@@ -59,9 +59,6 @@ padding_size = 2000
 ckpt_save_days = 10
 #评估时按 uid 采样的比例(0.01 = 1%)
 eval_uid_ratio = 0.2
-# 离线推理性能测试：先预热，再统计固定数量的完整batch。
-inference_benchmark_warmup_batches = 20
-inference_benchmark_measure_batches = 100
 #每条样本的 add_infos 字段个数
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标

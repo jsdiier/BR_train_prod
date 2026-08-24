@@ -15,8 +15,6 @@ from sklearn import metrics
 class Learner:
     def __init__(self):
         self.model = None
-        self.ema_vars = None
-        self.ema_decay = 0.999
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -37,9 +35,6 @@ class Learner:
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
     def _date_range(self, start, end):
@@ -63,7 +58,7 @@ class Learner:
                 files += tf.io.gfile.glob("%s/%s/part*" % (bp, day))
         return sorted(set(files))
 
-    def train(self, data_arg, start_day, end_day, model_path=None, data_path=None, dump_serving_model=True):
+    def train(self, data_arg, start_day, end_day, model_path=None, data_path=None):
         if self.model is None:
             self.model = Model(training=True)
         model = self.model
@@ -84,7 +79,7 @@ class Learner:
         shuffle_size = batch_size * 10
 
         #load ckpt (需要先跑一个 batch 建好变量再 restore)
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
+        ckpt_path = self.get_model_checkpoint_from_file(model_conf.done_file_path)
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -100,13 +95,6 @@ class Learner:
             ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
             print("load checkpoint path: ", ckpt_path)
-
-        probe_files = self.get_day_files(data_arg, days[0])
-        probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
-                                     fetch_size=1, num_parallel=10)
-        first_batch = next(iter(probe_ds))
-        _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
@@ -153,11 +141,10 @@ class Learner:
         mfout.close()
         print(datetime.datetime.now(), "metrics written to %s" % metric_path)
 
-        #导出 serving 模型。滚动评估只需要 checkpoint，可显式关闭，避免每天重复导出。
-        if dump_serving_model:
-            self.set_training_mode(False, True)
-            self.dump_serving_model(end_day, 0)
-            self.set_training_mode(True, False)
+        #导出 serving 模型
+        self.set_training_mode(False, True)
+        self.dump_serving_model(end_day, 0)
+        self.set_training_mode(True, False)
 
     def train_one_day(self, train_data, day, train_writer, mfout=None):
         model = self.model
@@ -266,9 +253,6 @@ class Learner:
 
     def save_checkpoint(self, day):
         model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -292,9 +276,6 @@ class Learner:
             return
 
         train_model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, train_model.trainable_weights):
-                w.assign(ema_v)
 
         fid_keys, fid_values = train_model.fid_table.export()
         fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
@@ -380,10 +361,6 @@ if __name__ == "__main__":
     parse.add_argument('-data', type=str, help='input data files')
     parse.add_argument('-start_day', type=str, help='train start day')
     parse.add_argument('-end_day', type=str, help='train end day')
-    parse.add_argument('-checkpoint_path', type=str, default=None,
-                       help='explicit checkpoint directory; defaults to last entry in model.done')
-    parse.add_argument('-dump_serving_model', type=int, default=1,
-                       help='1: dump serving model after training; 0: checkpoint only')
 
     args = parse.parse_args()
     solver = Learner()
@@ -400,9 +377,7 @@ if __name__ == "__main__":
         #按天 for 循环读取数据并训练(数据读取放在 train() 内部,逐天进行)
         print('start training, day by day from %s to %s' % (args.start_day, args.end_day))
         start_time = time.time()
-        solver.train(args.data, model_path=args.checkpoint_path, data_path=args.data,
-                     start_day=args.start_day, end_day=args.end_day,
-                     dump_serving_model=bool(args.dump_serving_model))
+        solver.train(args.data, data_path=args.data, start_day=args.start_day, end_day=args.end_day)
         end_time2 = time.time()
         print('end training, using_time_training: ', end_time2 - start_time)
     else:

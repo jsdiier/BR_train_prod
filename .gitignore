@@ -1,0 +1,15 @@
+model/*
+!model/.gitkeep
+
+log/*
+!log/.gitkeep
+
+serving_model_0/*
+!serving_model_0/.gitkeep
+
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+/model_version

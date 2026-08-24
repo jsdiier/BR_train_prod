@@ -465,11 +465,6 @@ class Model(tf.keras.Model):
         sum_square_fm_embedding = tf.reduce_sum(tf.math.square(full_emb), 1)
         fm = 0.5 * tf.math.subtract(square_sum_fm_embedding, sum_square_fm_embedding)
 
-        # #embedding part
-        # emb_slot_indices = self.slot_id_table.lookup(tf.constant(model_conf.embedding_slot_ids, dtype=tf.dtypes.int32))
-        # all_emb = tf.gather(pooled_output, emb_slot_indices, axis=1)
-        # all_emb = tf.reshape(all_emb, [tf.shape(all_emb)[0], -1])
-
         # 获取user_emb
         emb_user_indices = self.slot_id_table.lookup(tf.constant(model_conf.user_fea_list, dtype=tf.dtypes.int32))
         emb_user = tf.gather(pooled_output[:, :, 1:], emb_user_indices, axis=1)
@@ -504,11 +499,6 @@ class Model(tf.keras.Model):
         global_query_input = tf.reshape(
             global_query_input,
             [tf.shape(global_query_input)[0], len(model_conf.global_seq_query_sids) * model_conf.fm_emb_size])
-
-        # pooled_output_v2, slot_mask_v2 = self.process_and_pool_fused(sid_list, fid_list, table_type='din_ads_table')
-        # ads_slot_indices = self.slot_id_table_din_ads.lookup(tf.constant(model_conf.ads_fea_slots, dtype=tf.dtypes.int32))
-        # ads_emb = tf.gather(pooled_output_v2, ads_slot_indices, axis=1)
-        # ads_emb = tf.reshape(ads_emb, [tf.shape(ads_emb)[0], -1])
 
         seq_outputs = []
         for seq_name, seq_sid_ids in model_conf.seq_slot_dict.items():
@@ -597,7 +587,7 @@ class Model(tf.keras.Model):
             ctr_score = click_pred
             cat_score = cat_pred_org
             ext_score = ext_pred
-            return final_pred, cvr_score, ctr_score, cat_score, ext_score
+            return final_pred*5.6, cvr_score*2.69, ctr_score*0.388, cat_score*1.69, ext_score*0.208
 
         return ctcvr, cat_pred, click_pred, ext_pred
 
