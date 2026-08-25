@@ -10,6 +10,29 @@ from logger import logger
 from module.seq_attention import *
 
 
+class LinearWarmupSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    """Linear warmup followed by the unchanged baseline decay schedule."""
+    def __init__(self, schedule, warmup_steps):
+        super(LinearWarmupSchedule, self).__init__()
+        self.schedule = schedule
+        self.warmup_steps = int(warmup_steps)
+
+    def __call__(self, step):
+        step_f = tf.cast(step, tf.float32)
+        warmup_steps_f = tf.cast(self.warmup_steps, tf.float32)
+        warmup_lr = self.schedule(0) * step_f / warmup_steps_f
+        return tf.cond(
+            step < tf.cast(self.warmup_steps, step.dtype),
+            lambda: warmup_lr,
+            lambda: self.schedule(step))
+
+    def get_config(self):
+        return {
+            "schedule": tf.keras.optimizers.schedules.serialize(self.schedule),
+            "warmup_steps": self.warmup_steps,
+        }
+
+
 class Model(tf.keras.Model):
     def __init__(self, training=False, pred=False, fid_kv=None, fid_ads_kv=None, l2_reg=0.0001):
         super(Model, self).__init__()
@@ -27,8 +50,10 @@ class Model(tf.keras.Model):
         self.ads_layers_cache = {}
 
         self.loss_bc = tf.keras.losses.binary_crossentropy
-        self.lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(model_conf.learning_rate, decay_steps=1000000,
-                                                                          decay_rate=1, staircase=False)
+        base_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
+            model_conf.learning_rate, decay_steps=1000000,
+            decay_rate=1, staircase=False)
+        self.lr_schedule = LinearWarmupSchedule(base_schedule, warmup_steps=1000)
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_schedule, beta_1=0.9, beta_2=0.999,
                                                   epsilon=1e-07, amsgrad=False, name='Adam')
 
@@ -600,4 +625,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-
