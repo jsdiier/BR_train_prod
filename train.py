@@ -63,6 +63,16 @@ class Learner:
                 files += tf.io.gfile.glob("%s/%s/part*" % (bp, day))
         return sorted(set(files))
 
+    def get_first_available_files(self, data_arg, days):
+        for day in days:
+            files = self.get_day_files(data_arg, day)
+            if files:
+                print(datetime.datetime.now(),
+                      "first readable training partition: day=%s files=%d" %
+                      (day, len(files)))
+                return files
+        raise RuntimeError("training range contains no sampled part files")
+
     def train(self, data_arg, start_day, end_day, model_path=None, data_path=None, dump_serving_model=True):
         if self.model is None:
             self.model = Model(training=True)
@@ -89,7 +99,7 @@ class Learner:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
 
-            probe_files = self.get_day_files(data_arg, days[0])
+            probe_files = self.get_first_available_files(data_arg, days)
             probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size, fetch_size=1, num_parallel=10)
             first_batch = next(iter(probe_ds))
             _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
@@ -104,7 +114,7 @@ class Learner:
         # Build all variables before creating one EMA shadow per trainable.
         # A restored checkpoint therefore seeds shadows from restored weights;
         # a fresh run seeds them from the first real model initialization.
-        probe_files = self.get_day_files(data_arg, days[0])
+        probe_files = self.get_first_available_files(data_arg, days)
         probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
                                      fetch_size=1, num_parallel=10)
         first_batch = next(iter(probe_ds))
@@ -130,6 +140,8 @@ class Learner:
         self.gstep = 0
 
         print('training...')
+        trained_days = 0
+        last_trained_day = None
         for idx, day in enumerate(days):
             files = self.get_day_files(data_arg, day)
             if not files:
@@ -142,7 +154,13 @@ class Learner:
             self.set_training_mode(True, False)
             ds = ut.ReadTFRecordV2(files, shuffle_size=shuffle_size, batch_size=batch_size, fetch_size=10, num_parallel=10)
             ds = ds.apply(tf.data.experimental.ignore_errors())
-            self.train_one_day(ds, day, train_writer, mfout)
+            day_trained = self.train_one_day(ds, day, train_writer, mfout)
+            if not day_trained:
+                print(datetime.datetime.now(),
+                      "day %s produced no readable sampled batches, skip" % day)
+                continue
+            trained_days += 1
+            last_trained_day = day
 
             #当天训练的 summary 落盘
             if train_writer is not None:
@@ -152,6 +170,14 @@ class Learner:
             is_last = (idx == len(days) - 1)
             if (idx + 1) % model_conf.ckpt_save_days == 0 or is_last:
                 self.save_checkpoint(day)
+
+        if trained_days == 0:
+            raise RuntimeError("training range contains no readable sampled batches")
+        if last_trained_day != end_day:
+            print(datetime.datetime.now(),
+                  "target day %s is absent; save state trained through %s "
+                  "under target checkpoint day" % (end_day, last_trained_day))
+            self.save_checkpoint(end_day)
 
         mfout.close()
         print(datetime.datetime.now(), "metrics written to %s" % metric_path)
@@ -226,11 +252,12 @@ class Learner:
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)
-            return
+            return False
 
         #当天训练完成后直接算 auc/gauc/mae,把结果写到 metrics 文件
         if mfout is not None:
             self._write_day_metrics(day, eval_uids, eval_labels, eval_preds, mfout, train_writer)
+        return True
 
     def _write_day_metrics(self, day, uids, labels_by_task, preds_by_task, mfout, train_writer=None):
         """用当天内存里的采样子集算 auc/gauc/mae,结果写入 metrics 文件(+TensorBoard)。"""

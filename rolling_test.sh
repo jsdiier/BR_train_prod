@@ -29,27 +29,32 @@ checkpoint_ready() {
 sampled_train_day_ready() {
     local day=$1
     local day_path="${train_hdfs_dir%/}/${day}"
-    if $hadoop fs -test -e "${day_path}/_SUCCESS"; then
-        return 0
-    fi
     $hadoop fs -ls "${day_path}/part*" >/dev/null 2>&1
 }
 
-assert_sampled_train_day() {
-    local day=$1
-    if ! sampled_train_day_ready "$day"; then
-        echo "negative-sampled training data day is not ready: $day (${train_hdfs_dir%/}/$day)"
-        exit 1
-    fi
-}
-
-assert_sampled_train_range() {
+sampled_train_range_has_data() {
     local day=$1
     local end_day=$2
     while [[ "$day" -le "$end_day" ]]; do
-        assert_sampled_train_day "$day"
+        if sampled_train_day_ready "$day"; then
+            return 0
+        fi
         day=$(date_next "$day")
     done
+    return 1
+}
+
+carry_forward_checkpoint() {
+    local restore_day=$1
+    local target_day=$2
+    local source_dir
+    local target_dir
+    source_dir=$(checkpoint_dir "$restore_day")
+    target_dir=$(checkpoint_dir "$target_day")
+    mkdir -p "$target_dir"
+    cp -R "${source_dir%/}/." "$target_dir/"
+    printf '%s\t%s\n' "$target_day" "$target_dir" >> model/model.done
+    echo "no sampled data in target range; carried checkpoint $restore_day -> $target_day"
 }
 
 assert_eval_day() {
@@ -77,14 +82,24 @@ run_train_range() {
     local nowt
     nowt=$(date +%Y%m%d%H%M%S)
 
-    assert_sampled_train_range "$start_day" "$end_day"
-
-    local train_args=(-data "$train_hdfs_dir" -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
     if [[ -n "$restore_day" ]]; then
         if ! checkpoint_ready "$restore_day"; then
             echo "restore checkpoint is not ready: $restore_day"
             exit 1
         fi
+    fi
+
+    if ! sampled_train_range_has_data "$start_day" "$end_day"; then
+        if [[ -z "$restore_day" ]]; then
+            echo "initial training range contains no negative-sampled part files"
+            exit 1
+        fi
+        carry_forward_checkpoint "$restore_day" "$end_day"
+        return
+    fi
+
+    local train_args=(-data "$train_hdfs_dir" -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
+    if [[ -n "$restore_day" ]]; then
         train_args+=( -checkpoint_path "$(checkpoint_dir "$restore_day")" )
     fi
 
