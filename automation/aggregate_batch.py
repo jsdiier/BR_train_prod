@@ -98,13 +98,15 @@ def main():
     if not baseline_validation["ok"]:
         raise RuntimeError("baseline validation failed: %s" % "; ".join(baseline_validation["errors"]))
     if performance_mismatch:
-        raise RuntimeError("inference benchmark config differs from baseline: %s" %
-                           ",".join(performance_mismatch))
+        print("[BATCH] warning: inference benchmark config differs from baseline; "
+              "fixed/rolling metrics will still be aggregated, but inference performance "
+              "is not directly comparable: %s" % ",".join(performance_mismatch))
     out = os.path.join(args.tools_dir, "result", batch["batch_id"])
     os.makedirs(os.path.join(out, "failures"), exist_ok=True)
 
     manifest = {"batch_id": batch["batch_id"], "baseline": batch["baseline"],
                 "generated_at": now(), "baseline_validation": baseline_validation,
+                "inference_benchmark_config_mismatch": performance_mismatch,
                 "members": states}
     atomic_json(os.path.join(out, "manifest.json"), manifest)
     with open(os.path.join(out, "status.tsv"), "w", newline="", encoding="utf-8") as handle:
