@@ -1,0 +1,7 @@
+[INFO] BR_train_prod_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] BR_train_prod_baseline_rerun_20260823: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_baseline_rerun_20260823/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_br_mx_multidomain_fusion_v2: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_br_mx_multidomain_fusion_v2/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_partial_dense_continuation_sync: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_partial_dense_continuation_sync/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_shared_representation_continuation_sync: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_shared_representation_continuation_sync/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_task_private_continuation_sync: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_task_private_continuation_sync/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260823_162011/rolling_auc.html
