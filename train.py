@@ -141,6 +141,12 @@ class Learner:
             ds = ds.apply(tf.data.experimental.ignore_errors())
             self.train_one_day(ds, day, train_writer, mfout)
 
+            # Bound shared-representation drift at the same cadence as the
+            # day-by-day rolling jobs.  Embeddings and task-private heads keep
+            # following their online trajectories, while optimizer slots are
+            # deliberately left untouched.
+            self._sync_shared_representation_from_ema(day)
+
             #当天训练的 summary 落盘
             if train_writer is not None:
                 train_writer.flush()
@@ -264,25 +270,9 @@ class Learner:
                     tf.summary.scalar('eval_mae/%s' % t, mae, step=step)
         mfout.flush()
 
-    def save_checkpoint(self, day):
+    def _ema_variable_groups(self):
+        """Partition trainables by layer identity, never by variable name."""
         model = self.model
-        online_save_dir = "%s/online_checkpoints/%s/" % (model_conf.local_model_dir, day)
-        online_export_dir = online_save_dir + "tfmodel"
-        online_ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-        online_ckpt.save(online_export_dir)
-
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
-        save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
-        export_dir = save_dir + "tfmodel"
-        ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-        ckpt.save(export_dir)
-
-        # Evaluation remains full-EMA. Continuation restores the online state,
-        # then synchronizes only the shared representation. Embeddings and
-        # task-private towers/heads remain on their online trajectories.
-        online_ckpt.restore(tf.train.latest_checkpoint(online_save_dir)).assert_consumed()
         embedding_ids = {
             id(v) for v in (model.emb_fm.trainable_weights + model.emb_din_ads.trainable_weights)
         }
@@ -299,7 +289,13 @@ class Learner:
         task_private_ids = {id(v) for v in task_private_weights}
         if embedding_ids.intersection(task_private_ids):
             raise RuntimeError("EMA variable groups overlap")
+        return embedding_ids, task_private_ids
 
+    def _sync_shared_representation_from_ema(self, day):
+        if self.ema_vars is None:
+            raise RuntimeError("EMA variables are not initialized")
+        model = self.model
+        embedding_ids, task_private_ids = self._ema_variable_groups()
         shared_sync_count = 0
         task_private_count = 0
         embedding_count = 0
@@ -320,6 +316,33 @@ class Learner:
                 "task_private=%d shared=%d total=%d trainables=%d" %
                 (embedding_count, task_private_count, shared_sync_count,
                  partition_count, len(model.trainable_weights)))
+        print(datetime.datetime.now(),
+              "daily shared-representation EMA sync day=%s "
+              "embeddings_online=%d task_private_online=%d shared_synced=%d" %
+              (day, embedding_count, task_private_count, shared_sync_count))
+        return embedding_count, task_private_count, shared_sync_count
+
+    def save_checkpoint(self, day):
+        model = self.model
+        online_save_dir = "%s/online_checkpoints/%s/" % (model_conf.local_model_dir, day)
+        online_export_dir = online_save_dir + "tfmodel"
+        online_ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        online_ckpt.save(online_export_dir)
+
+        if self.ema_vars is not None:
+            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
+                w.assign(ema_v)
+        save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
+        export_dir = save_dir + "tfmodel"
+        ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        ckpt.save(export_dir)
+
+        # Evaluation remains full-EMA. Continuation restores the online state,
+        # then synchronizes only the shared representation. Embeddings and
+        # task-private towers/heads remain on their online trajectories.
+        online_ckpt.restore(tf.train.latest_checkpoint(online_save_dir)).assert_consumed()
+        embedding_count, task_private_count, shared_sync_count = \
+            self._sync_shared_representation_from_ema(day)
 
         continuation_save_dir = "%s/continuation_checkpoints/%s/" % (
             model_conf.local_model_dir, day)
