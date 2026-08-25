@@ -8,7 +8,7 @@ from tensorflow.python.framework import sparse_tensor
 from module.rankmixer_v4 import *
 from logger import logger
 from module.seq_attention import *
-from module.multidomain import MXInputAdapter
+from module.multidomain import CountryFiLM, MXInputAdapter, SharedResidualBottleneck
 
 
 class Model(tf.keras.Model):
@@ -169,15 +169,19 @@ class Model(tf.keras.Model):
         self.dense_concat3 = tf.keras.layers.Dense(1, activation="sigmoid",
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
 
-        # A residual shared trunk is the only high-level parameter path updated
-        # by both countries. Input namespaces and task calibration remain
-        # country-specific.
-        self.shared_fusion_dense = tf.keras.layers.Dense(
-            model_conf.shared_fusion_dim, activation=tf.nn.swish,
-            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
-            name='shared_fusion_dense')
-        self.shared_fusion_ln = tf.keras.layers.LayerNormalization(
-            axis=-1, epsilon=1e-5, name='shared_fusion_ln')
+        # Both countries exchange information only after their independent
+        # input encoders have produced the same 777-dimensional latent.  Zero
+        # initialized up-projections and FiLM parameters make the initial BR
+        # forward path exactly identity-compatible with the baseline.
+        self.shared_residual_blocks = [
+            SharedResidualBottleneck(
+                model_conf.shared_fusion_dim,
+                model_conf.shared_bottleneck_dim,
+                block_index=index)
+            for index in range(model_conf.shared_bottleneck_blocks)
+        ]
+        self.country_film = CountryFiLM(
+            model_conf.country_count, model_conf.shared_fusion_dim)
 
         if self.enable_mx:
             self.mx_input_adapter = MXInputAdapter(
@@ -186,46 +190,38 @@ class Model(tf.keras.Model):
                 num_buckets=model_conf.mx_num_buckets,
                 embedding_dim=model_conf.lr_emb_size + model_conf.fm_emb_size,
                 latent_dim=model_conf.mx_latent_dim)
-            self.mx_buy_tower = self._make_mx_tower('mx_buy_tower')
-            self.mx_cat_tower = self._make_mx_tower('mx_cat_tower')
-            self.mx_click_tower = self._make_mx_tower('mx_click_tower')
-            self.mx_ext_tower = self._make_mx_tower('mx_ext_tower')
-            self.mx_buy_head = tf.keras.layers.Dense(
-                1, activation='sigmoid', name='mx_buy_head')
-            self.mx_cat_head = tf.keras.layers.Dense(
-                1, activation='sigmoid', name='mx_cat_head')
-            self.mx_click_head = tf.keras.layers.Dense(
-                1, activation='sigmoid', name='mx_click_head')
-            self.mx_ext_head = tf.keras.layers.Dense(
-                1, activation='sigmoid', name='mx_ext_head')
 
-    def _make_mx_tower(self, name):
-        layers = []
-        if self.use_bn:
-            layers.append(tf.keras.layers.BatchNormalization(name=name + '_bn'))
-        layers.append(tf.keras.layers.Dense(
-            256, activation=tf.nn.swish,
-            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
-            name=name + '_dense'))
-        return tf.keras.Sequential(layers, name=name)
+    def _shared_fusion(self, representation, country_id):
+        for block in self.shared_residual_blocks:
+            representation = block(representation)
+        return self.country_film(representation, country_id=country_id)
 
-    def _shared_fusion(self, representation):
-        return self.shared_fusion_ln(
-            representation + self.shared_fusion_dense(representation))
+    def _shared_task_heads(self, representation, training):
+        buy_tower_output = self.buy_tower(
+            representation, training=training)
+        cat_tower_output = self.cat_tower(
+            representation, training=training)
+        click_tower_output = self.click_tower(
+            representation, training=training)
+        ext_tower_output = self.ext_tower(
+            representation, training=training)
+        buy = self.dense_concat(buy_tower_output)
+        cat = self.dense_concat1(cat_tower_output)
+        click = self.dense_concat2(click_tower_output)
+        ext = self.dense_concat3(ext_tower_output)
+        return buy, cat, click, ext
 
     def _call_mx(self, inputs):
         if not self.enable_mx:
             raise RuntimeError('MX path is disabled in the BR serving model')
         representation = self.mx_input_adapter(inputs, training=self.training)
-        representation = self._shared_fusion(representation)
-        buy = self.mx_buy_head(self.mx_buy_tower(
-            representation, training=self.training))
-        cat = self.mx_cat_head(self.mx_cat_tower(
-            representation, training=self.training))
-        click = self.mx_click_head(self.mx_click_tower(
-            representation, training=self.training))
-        ext = self.mx_ext_head(self.mx_ext_tower(
-            representation, training=self.training))
+        representation = self._shared_fusion(
+            representation, country_id=model_conf.mx_country_id)
+        # Shared Dense/head weights learn from MX, but BatchNorm moving moments
+        # remain target-BR calibrated for deterministic BR-only serving. FiLM
+        # is responsible for mapping MX representations into that space.
+        buy, cat, click, ext = self._shared_task_heads(
+            representation, training=False)
         return click * buy, cat, click, ext
 
     def initialize_mx_path(self):
@@ -647,17 +643,10 @@ class Model(tf.keras.Model):
         rankmixer_output = self.rankmixer(deep_input)
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
-        concat = self._shared_fusion(concat)
-
-        buy_tower_output = self.buy_tower(concat, training=self.training)
-        cat_tower_output = self.cat_tower(concat, training=self.training)
-        click_tower_output = self.click_tower(concat, training=self.training)
-        ext_tower_output = self.ext_tower(concat, training=self.training)
-
-        cvr_pred_org = self.dense_concat(buy_tower_output)
-        cat_pred_org = self.dense_concat1(cat_tower_output)
-        click_pred = self.dense_concat2(click_tower_output)
-        ext_pred = self.dense_concat3(ext_tower_output)
+        concat = self._shared_fusion(
+            concat, country_id=model_conf.br_country_id)
+        cvr_pred_org, cat_pred_org, click_pred, ext_pred = \
+            self._shared_task_heads(concat, training=self.training)
 
         cat_pred = cat_pred_org
 

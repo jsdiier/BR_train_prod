@@ -38,7 +38,9 @@ class Learner:
             name for name, _ in tf.train.list_variables(latest_checkpoint)
         ]
         is_multidomain = any(
-            'mx_input_adapter' in name or 'shared_fusion' in name
+            ('mx_input_adapter' in name or
+             'shared_residual_block' in name or
+             'country_film' in name)
             for name in checkpoint_names
         )
         status = ckpt.restore(latest_checkpoint)

@@ -1,6 +1,53 @@
 import tensorflow as tf
 
 
+class SharedResidualBottleneck(tf.keras.layers.Layer):
+    """Low-rank residual exchange block with an identity-safe initializer."""
+
+    def __init__(self, latent_dim, bottleneck_dim, block_index, **kwargs):
+        super(SharedResidualBottleneck, self).__init__(
+            name='shared_residual_block_%d' % block_index, **kwargs)
+        self.normalizer = tf.keras.layers.LayerNormalization(
+            axis=-1, epsilon=1e-5, name='layer_norm')
+        self.down_projection = tf.keras.layers.Dense(
+            bottleneck_dim, activation=tf.nn.swish, name='down_projection')
+        self.up_projection = tf.keras.layers.Dense(
+            latent_dim,
+            kernel_initializer='zeros',
+            bias_initializer='zeros',
+            name='zero_init_up_projection')
+
+    def call(self, inputs):
+        residual = self.normalizer(inputs)
+        residual = self.down_projection(residual)
+        residual = self.up_projection(residual)
+        return inputs + residual
+
+
+class CountryFiLM(tf.keras.layers.Layer):
+    """Country-conditioned affine calibration after shared representation."""
+
+    def __init__(self, country_count, latent_dim, **kwargs):
+        super(CountryFiLM, self).__init__(name='country_film', **kwargs)
+        self.country_count = country_count
+        self.latent_dim = latent_dim
+
+    def build(self, input_shape):
+        self.gamma = self.add_weight(
+            name='gamma', shape=(self.country_count, self.latent_dim),
+            initializer='zeros', trainable=True)
+        self.beta = self.add_weight(
+            name='beta', shape=(self.country_count, self.latent_dim),
+            initializer='zeros', trainable=True)
+        super(CountryFiLM, self).build(input_shape)
+
+    def call(self, inputs, country_id):
+        country_id = tf.cast(country_id, tf.int32)
+        gamma = tf.gather(self.gamma, country_id)
+        beta = tf.gather(self.beta, country_id)
+        return (1.0 + gamma) * inputs + beta
+
+
 class MXInputAdapter(tf.keras.layers.Layer):
     """Independent MX feature namespace projected into the shared latent space."""
 

@@ -33,21 +33,25 @@ class Learner:
         return gradient * scale
 
     @classmethod
-    def _average_domain_gradients(cls, br_gradient, mx_gradient):
+    def _combine_domain_gradients(cls, br_gradient, mx_gradient):
+        """Implement the exact objective L_BR + mx_loss_weight * L_MX."""
         if br_gradient is None:
-            return cls._scale_gradient(mx_gradient, 0.5)
+            return cls._scale_gradient(mx_gradient, model_conf.mx_loss_weight)
         if mx_gradient is None:
-            return cls._scale_gradient(br_gradient, 0.5)
+            return br_gradient
         if isinstance(br_gradient, tf.IndexedSlices) and isinstance(mx_gradient, tf.IndexedSlices):
             return tf.IndexedSlices(
-                tf.concat([br_gradient.values * 0.5, mx_gradient.values * 0.5], axis=0),
+                tf.concat([
+                    br_gradient.values,
+                    mx_gradient.values * model_conf.mx_loss_weight,
+                ], axis=0),
                 tf.concat([br_gradient.indices, mx_gradient.indices], axis=0),
                 br_gradient.dense_shape)
         if isinstance(br_gradient, tf.IndexedSlices):
             br_gradient = tf.convert_to_tensor(br_gradient)
         if isinstance(mx_gradient, tf.IndexedSlices):
             mx_gradient = tf.convert_to_tensor(mx_gradient)
-        return (br_gradient + mx_gradient) * 0.5
+        return br_gradient + mx_gradient * model_conf.mx_loss_weight
 
     @staticmethod
     def _restore_multidomain_checkpoint(ckpt, checkpoint_dir):
@@ -59,7 +63,9 @@ class Learner:
             name for name, _ in tf.train.list_variables(latest_checkpoint)
         ]
         is_multidomain = any(
-            'mx_input_adapter' in name or 'shared_fusion' in name
+            ('mx_input_adapter' in name or
+             'shared_residual_block' in name or
+             'country_film' in name)
             for name in checkpoint_names
         )
         status = ckpt.restore(latest_checkpoint)
@@ -67,7 +73,7 @@ class Learner:
             status.assert_consumed()
             print("strictly restored multidomain checkpoint")
         else:
-            # The approved experiment deliberately adds MX/private and shared
+            # The approved experiment deliberately adds MX and shared
             # variables that cannot exist in the BR-only initialization ckpt.
             status.expect_partial()
             print("restored BR baseline checkpoint; initialized new MX/shared "
@@ -108,7 +114,7 @@ class Learner:
 
         mx_gradients = mx_tape.gradient(mx_loss, variables)
         gradients = [
-            self._average_domain_gradients(br_gradient, mx_gradient)
+            self._combine_domain_gradients(br_gradient, mx_gradient)
             for br_gradient, mx_gradient in zip(br_gradients, mx_gradients)
         ]
         gradients_and_vars = [
@@ -120,13 +126,20 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        # BR and MX can have different-sized tail batches. Keep the existing
-        # independently computed/averaged gradient path unchanged, and reduce
-        # each per-example loss vector before combining the reporting scalar.
-        final_loss = 0.5 * (
-            tf.reduce_mean(br_loss) + tf.reduce_mean(mx_loss))
+        br_gradient_norm = tf.linalg.global_norm([
+            gradient for gradient in br_gradients if gradient is not None
+        ])
+        mx_gradient_norm = tf.linalg.global_norm([
+            self._scale_gradient(gradient, model_conf.mx_loss_weight)
+            for gradient in mx_gradients if gradient is not None
+        ])
+        # Reduce only for reporting; the applied gradients retain the baseline
+        # per-batch BR scale and add a 0.25-weighted MX auxiliary gradient.
+        final_loss = (tf.reduce_mean(br_loss) +
+                      model_conf.mx_loss_weight * tf.reduce_mean(mx_loss))
         return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
-                pred_buy, pred_cat, pred_click, pred_ext, mx_loss)
+                pred_buy, pred_cat, pred_click, pred_ext, mx_loss,
+                br_gradient_norm, mx_gradient_norm)
 
     @tf.function(experimental_relax_shapes=True)
     def train_step_br_only(self, feat, buy_weight=1.0, cat_weight=1.0,
@@ -453,6 +466,10 @@ class Learner:
         n_sampled = 0
         observed_br_slots = set()
         observed_mx_slots = set()
+        br_day_pos = np.zeros(len(label_keys))
+        br_day_cnt = 0
+        mx_pos = np.zeros(len(label_keys))
+        mx_cnt = 0
         has_mx = False
         if mx_train_data is not None:
             mx_iterator = iter(mx_train_data.repeat())
@@ -475,22 +492,33 @@ class Learner:
             label_arrs = [np.reshape(feat[k].numpy(), [-1]) for k in label_keys]
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
+            br_day_cnt += label_arrs[0].shape[0]
+            br_day_pos += [a.sum() for a in label_arrs]
 
             if has_mx:
                 (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
                  pred_buy, pred_cat, pred_click, pred_ext,
-                 mx_loss) = self.train_step(feat, mx_feat)
+                 mx_loss, br_gradient_norm,
+                 mx_gradient_norm) = self.train_step(feat, mx_feat)
             else:
                 (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
                  pred_buy, pred_cat, pred_click,
                  pred_ext) = self.train_step_br_only(feat)
                 mx_loss = None
+                br_gradient_norm = None
+                mx_gradient_norm = None
 
             observed_br_slots.update(
                 int(value) for value in feat['fea_ids'].values.numpy())
             if has_mx:
                 observed_mx_slots.update(
                     int(value) for value in mx_feat['fea_ids'].values.numpy())
+                mx_label_arrs = [
+                    np.reshape(mx_feat[key].numpy(), [-1])
+                    for key in label_keys
+                ]
+                mx_cnt += mx_label_arrs[0].shape[0]
+                mx_pos += [values.sum() for values in mx_label_arrs]
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -525,6 +553,8 @@ class Learner:
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
                     if has_mx:
                         tf.summary.scalar('loss/mx_total', tf.reduce_mean(mx_loss), step=global_step)
+                        tf.summary.scalar('gradient/br_global_norm', br_gradient_norm, step=global_step)
+                        tf.summary.scalar('gradient/mx_weighted_global_norm', mx_gradient_norm, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
@@ -533,6 +563,12 @@ class Learner:
                         "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
                         tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                if has_mx:
+                    print(datetime.datetime.now(),
+                          "multidomain gradient step=%d BR_norm=%.6f "
+                          "MX_weighted_norm=%.6f MX_loss_weight=%.3f" %
+                          (self.gstep, br_gradient_norm, mx_gradient_norm,
+                           model_conf.mx_loss_weight))
 
         if step < 0:
             return False
@@ -541,10 +577,16 @@ class Learner:
         consumed_mx_slots = observed_mx_slots.intersection(configured_mx_slots)
         print(datetime.datetime.now(),
               "multidomain day=%s mode=%s batches=%d BR_observed_slots=%d "
-              "MX_observed_slots=%d MX_consumed_slots=%d/%d MX_unique_fids=%d" %
+              "MX_observed_slots=%d MX_consumed_slots=%d/%d MX_unique_fids=%d "
+              "BR_samples=%d MX_samples=%d BR_pos_rate=%s MX_pos_rate=%s "
+              "MX_loss_weight=%.3f" %
               (day, training_mode, step + 1, len(observed_br_slots), len(observed_mx_slots),
                len(consumed_mx_slots), len(configured_mx_slots),
-               int(model.mx_input_adapter.observed_fid_count().numpy())))
+               int(model.mx_input_adapter.observed_fid_count().numpy()),
+               br_day_cnt, mx_cnt,
+               ','.join('%.6f' % (value / max(br_day_cnt, 1)) for value in br_day_pos),
+               ','.join('%.6f' % (value / max(mx_cnt, 1)) for value in mx_pos),
+               model_conf.mx_loss_weight))
 
         #当天训练完成后直接算 auc/gauc/mae,把结果写到 metrics 文件
         if mfout is not None:

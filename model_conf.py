@@ -99,6 +99,12 @@ mx_all_slot_ids = [
 ]
 mx_latent_dim = 768
 shared_fusion_dim = 1 + fm_emb_size + mx_latent_dim
+shared_bottleneck_dim = 128
+shared_bottleneck_blocks = 2
+country_count = 2
+br_country_id = 0
+mx_country_id = 1
+mx_loss_weight = 0.25
 #每条样本的 add_infos 字段个数
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标

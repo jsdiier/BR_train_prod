@@ -1,5 +1,18 @@
 # luban
 
+## Experiment: BR + MX multidomain fusion v3
+
+- BR and MX retain separate TFRecord parsers, slot namespaces, and embedding
+  tables. Missing or unreadable MX days explicitly fall back to BR-only.
+- The BR rich encoder and MX adapter both emit a 777-dimensional latent.
+- Two zero-initialized low-rank residual bottlenecks provide controlled shared
+  information exchange, followed by country-conditioned FiLM.
+- Both countries use the same four task towers and four output heads. There is
+  no country-private 4+4 head layout.
+- Joint batches apply `L_BR + 0.25 * L_MX`; fixed/rolling tests and serving are
+  BR-only. The serving export excludes the MX adapter and embedding table while
+  retaining the shared trunk and BR FiLM route.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。
