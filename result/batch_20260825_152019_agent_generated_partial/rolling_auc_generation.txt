@@ -1,0 +1,6 @@
+[INFO] BR_train_prod_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_daily_shared_representation_sync: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_daily_shared_representation_sync/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_din_dice_activation: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_din_dice_activation/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_lr_schedule_warmup: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_lr_schedule_warmup/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_shared_pcgrad: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_shared_pcgrad/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260825_152019_agent_generated_partial.tmp.3549602/rolling_auc.html

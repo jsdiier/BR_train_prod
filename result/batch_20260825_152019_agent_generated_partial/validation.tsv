@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_ema_daily_shared_representation_sync	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_din_dice_activation	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_lr_schedule_warmup	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_shared_pcgrad	yes	yes	yes	yes	yes	yes
