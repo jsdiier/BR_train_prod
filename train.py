@@ -17,30 +17,94 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.gradient_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
+    def _shared_dense_weights(self):
+        """Shared dense variables only; exclude embeddings and task-private heads."""
+        model = self.model
+        embedding_ids = {
+            id(v) for v in (model.emb_fm.trainable_weights +
+                            model.emb_din_ads.trainable_weights)
+        }
+        private_weights = (
+            model.buy_tower.trainable_weights + model.cat_tower.trainable_weights +
+            model.click_tower.trainable_weights + model.ext_tower.trainable_weights +
+            model.dense_concat.trainable_weights + model.dense_concat1.trainable_weights +
+            model.dense_concat2.trainable_weights + model.dense_concat3.trainable_weights
+        )
+        excluded_ids = embedding_ids.union(id(v) for v in private_weights)
+        shared = [v for v in model.trainable_weights if id(v) not in excluded_ids]
+        if not embedding_ids or not private_weights or not shared:
+            raise RuntimeError(
+                "invalid gradient diagnostic partition: embeddings=%d private=%d shared=%d" %
+                (len(embedding_ids), len(private_weights), len(shared)))
+        return shared
+
+    def _append_gradient_diagnostic(self, day, cosine, buy_norm, click_norm, conflict):
+        if not self.gradient_diagnostic_path:
+            return
+        with open(self.gradient_diagnostic_path, 'a') as handle:
+            handle.write("%s\t%d\t%.8f\t%.8f\t%.8f\t%d\n" % (
+                day,
+                self.gstep,
+                float(cosine.numpy()),
+                float(buy_norm.numpy()),
+                float(click_norm.numpy()),
+                int(conflict.numpy()),
+            ))
+
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
         model = self.model
-        with tf.GradientTape() as tape:
-            pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
+        shared_weights = self._shared_dense_weights()
+        with tf.GradientTape(persistent=True) as tape:
+            (pred_buy, pred_cat, pred_click, pred_ext,
+             joint_pred_buy) = model(
+                [feat['fea_ids'], feat['fea_vals']],
+                stop_buy_gradient=True,
+                return_joint_buy=True)
 
             loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
             loss_click = model.loss_bc(tf.expand_dims(feat['clk_label'], 1), pred_click)
             loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), pred_ext)
+            joint_loss_buy = model.loss_bc(
+                tf.expand_dims(feat['cvr_label'], 1), joint_pred_buy)
 
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
 
-            gradients = tape.gradient(final_loss, model.trainable_weights)
+        gradients = tape.gradient(final_loss, model.trainable_weights)
+        buy_gradients = tape.gradient(joint_loss_buy, shared_weights)
+        click_gradients = tape.gradient(loss_click, shared_weights)
+        del tape
+        buy_gradients = [
+            tf.zeros_like(v) if g is None else g
+            for g, v in zip(buy_gradients, shared_weights)
+        ]
+        click_gradients = [
+            tf.zeros_like(v) if g is None else g
+            for g, v in zip(click_gradients, shared_weights)
+        ]
+        dot = tf.add_n([
+            tf.reduce_sum(buy_g * click_g)
+            for buy_g, click_g in zip(buy_gradients, click_gradients)
+        ])
+        buy_shared_norm = tf.linalg.global_norm(buy_gradients)
+        click_shared_norm = tf.linalg.global_norm(click_gradients)
+        buy_click_cosine = dot / (buy_shared_norm * click_shared_norm + 1e-12)
+        buy_click_conflict = tf.cast(buy_click_cosine < 0.0, tf.float32)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                buy_click_cosine, buy_shared_norm,
+                click_shared_norm, buy_click_conflict)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +180,10 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.gradient_diagnostic_path = os.path.join(out_dir, 'buy_click_gradient_diagnostics.tsv')
+        if not os.path.exists(self.gradient_diagnostic_path) or os.path.getsize(self.gradient_diagnostic_path) == 0:
+            with open(self.gradient_diagnostic_path, 'w') as handle:
+                handle.write('day\tglobal_step\tcosine\tbuy_norm\tclick_norm\tconflict\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +247,10 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             buy_click_cosine, buy_shared_norm,
+             click_shared_norm, buy_click_conflict) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -212,14 +283,22 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('buy_click_gradient/cosine', buy_click_cosine, step=global_step)
+                    tf.summary.scalar('buy_click_gradient/buy_norm', buy_shared_norm, step=global_step)
+                    tf.summary.scalar('buy_click_gradient/click_norm', click_shared_norm, step=global_step)
+                    tf.summary.scalar('buy_click_gradient/conflict', buy_click_conflict, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
 
+                self._append_gradient_diagnostic(
+                    day, buy_click_cosine, buy_shared_norm,
+                    click_shared_norm, buy_click_conflict)
                 print(datetime.datetime.now(),
-                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
+                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d, buy_click_cosine: %.6f, conflict: %d" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
-                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled,
+                        buy_click_cosine, buy_click_conflict))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)

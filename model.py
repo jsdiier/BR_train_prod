@@ -446,7 +446,8 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, stop_buy_gradient=False,
+             return_joint_buy=False):
         sids, fids = inputs
         step = self.optimizer.iterations
 
@@ -589,7 +590,9 @@ class Model(tf.keras.Model):
 
         cat_pred = cat_pred_org
 
-        ctcvr = tf.math.multiply(click_pred, cvr_pred_org)
+        joint_ctcvr = tf.math.multiply(click_pred, cvr_pred_org)
+        buy_click_factor = tf.stop_gradient(click_pred) if stop_buy_gradient else click_pred
+        ctcvr = tf.math.multiply(buy_click_factor, cvr_pred_org)
 
         if self.is_save_model or self.pred:
             final_pred = ctcvr
@@ -599,5 +602,6 @@ class Model(tf.keras.Model):
             ext_score = ext_pred
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
+        if return_joint_buy:
+            return ctcvr, cat_pred, click_pred, ext_pred, joint_ctcvr
         return ctcvr, cat_pred, click_pred, ext_pred
-
