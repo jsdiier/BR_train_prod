@@ -104,6 +104,29 @@ class Model(tf.keras.Model):
         # 初始化底层主网络
         self.rankmixer = RankMixer(t=16, token_dim=768, num_heads=16, num_experts=16, hidden_ratio=2,
                                    training=self.training)
+
+        # Late-arriving interest features use the existing FM embedding table,
+        # but are summarized by semantic group before entering the task towers.
+        all_slot_position = {sid: idx for idx, sid in enumerate(model_conf.all_slot_ids)}
+        self.interest_group_indices = [
+            tf.constant([all_slot_position[sid] for sid in group], dtype=tf.int32)
+            for group in model_conf.interest_slot_groups
+        ]
+        self.interest_stat_indices = tf.constant(
+            [all_slot_position[sid] for sid in model_conf.interest_stat_slot_ids], dtype=tf.int32)
+        self.interest_fusion_hidden = tf.keras.layers.Dense(
+            model_conf.interest_fusion_hidden_dim,
+            activation=tf.nn.swish,
+            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
+            name='interest_fusion_hidden')
+        self.interest_fusion_residual = tf.keras.layers.Dense(
+            model_conf.interest_fusion_output_dim,
+            kernel_initializer='zeros',
+            bias_initializer='zeros',
+            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
+            name='interest_fusion_residual')
+        self.last_new_feature_sample_rate = tf.constant(0.0, dtype=tf.float32)
+        self.last_interest_group_active_rate = tf.constant(0.0, dtype=tf.float32)
         # 初始化序列网络
         self.seq_click_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_click_seq')
         self.seq_pay_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_pay_seq')
@@ -446,6 +469,57 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
+    def encode_new_interest_features(self, pooled_output, slot_mask):
+        """Masked mean/max for 40 interest groups plus eight stat slots.
+
+        Missing positions never enter the mean denominator.  An all-missing
+        sample receives an exact zero residual, including zero bias gradient.
+        """
+        fm_output = pooled_output[:, :, 1:]
+        group_vectors = []
+        group_presence = []
+
+        for group_indices in self.interest_group_indices:
+            group_emb = tf.gather(fm_output, group_indices, axis=1)
+            group_mask = tf.gather(slot_mask, group_indices, axis=1)
+            expanded_mask = tf.expand_dims(group_mask, axis=-1)
+            valid_count = tf.reduce_sum(group_mask, axis=1, keepdims=True)
+            has_group = tf.greater(valid_count, 0.0)
+
+            group_mean = tf.reduce_sum(group_emb * expanded_mask, axis=1)
+            group_mean = group_mean / tf.maximum(valid_count, 1.0)
+
+            masked_emb = tf.where(
+                tf.greater(expanded_mask, 0.0),
+                group_emb,
+                tf.fill(tf.shape(group_emb), tf.cast(-1e9, group_emb.dtype)))
+            group_max = tf.reduce_max(masked_emb, axis=1)
+            group_max = tf.where(has_group, group_max, tf.zeros_like(group_max))
+
+            group_vectors.append(tf.concat([group_mean, group_max], axis=-1))
+            group_presence.append(tf.cast(has_group, tf.float32))
+
+        stat_emb = tf.gather(fm_output, self.interest_stat_indices, axis=1)
+        stat_mask = tf.gather(slot_mask, self.interest_stat_indices, axis=1)
+        stat_emb = stat_emb * tf.expand_dims(stat_mask, axis=-1)
+        stat_vector = tf.reshape(
+            stat_emb,
+            [tf.shape(stat_emb)[0], len(model_conf.interest_stat_slot_ids) * model_conf.fm_emb_size])
+
+        group_presence = tf.concat(group_presence, axis=1)
+        has_interest = tf.reduce_max(group_presence, axis=1, keepdims=True)
+        has_stat = tf.reduce_max(stat_mask, axis=1, keepdims=True)
+        has_new_feature = tf.maximum(has_interest, has_stat)
+
+        fusion_input = tf.concat(group_vectors + [stat_vector], axis=-1)
+        hidden = self.interest_fusion_hidden(fusion_input)
+        residual = self.interest_fusion_residual(hidden)
+        residual = residual * has_new_feature
+
+        self.last_new_feature_sample_rate = tf.reduce_mean(has_new_feature)
+        self.last_interest_group_active_rate = tf.reduce_mean(group_presence)
+        return residual
+
     def call(self, inputs, training=None):
         sids, fids = inputs
         step = self.optimizer.iterations
@@ -453,6 +527,8 @@ class Model(tf.keras.Model):
         sid_list, fid_list = self.transform(sids, fids)
 
         pooled_output, slot_mask = self.process_and_pool_fused(sid_list, fid_list)
+
+        interest_residual = self.encode_new_interest_features(pooled_output, slot_mask)
 
         # lr part
         lr_indices = self.slot_id_table.lookup(tf.constant(model_conf.lr_slot_ids, dtype=tf.dtypes.int32))
@@ -576,6 +652,11 @@ class Model(tf.keras.Model):
         rankmixer_output = self.rankmixer(deep_input)
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
+        tf.debugging.assert_equal(
+            tf.shape(concat)[1],
+            model_conf.interest_fusion_output_dim,
+            message='interest residual dimension must match the task-tower input')
+        concat = concat + interest_residual
 
         buy_tower_output = self.buy_tower(concat, training=self.training)
         cat_tower_output = self.cat_tower(concat, training=self.training)
@@ -600,4 +681,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-

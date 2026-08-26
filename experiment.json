@@ -1,11 +1,11 @@
 {
-  "enabled": true,
-  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "enabled": false,
+  "manual_only": true,
+  "rolling_enabled": false,
+  "baseline": "BR_train_prod_baseline_new_feature_window_control",
   "train_start_day": "20260303",
-  "train_end_day": "20260720",
-  "test_start_day": "20260721",
-  "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
+  "train_end_day": "20260820",
+  "test_start_day": "20260821",
+  "test_end_day": "20260823",
   "require_inference_benchmark": true
 }

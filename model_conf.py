@@ -44,6 +44,27 @@ search_long_clk_catel3_seq = list(range(33250, 33300))
 search_long_query_catel3_seq = list(range(33400, 33450))
 
 seq_slot_dict = {"user_click_seq": user_click_seq,"user_pay_seq": user_pay_seq,"user_12h_click_cateid":u_12h_click_cateIds}
+
+# New feature artifact (feature_list.conf slots 1550-2061).  Keep the model
+# topology fixed from the first training day; old-source samples simply have
+# no entries for these slots.
+interest_slot_ids = list(range(1550, 2054))
+interest_stat_slot_ids = list(range(2054, 2062))
+new_feature_slot_ids = interest_slot_ids + interest_stat_slot_ids
+
+# feature_list.conf is ordered by window.  Each window contains the same eight
+# semantic families (click/order x main/second/third category/brand).  Top-N is
+# 14 for 1/3/7/14-day windows and 7 for the period window: 8*(14*4+7)=504.
+interest_group_sizes = ([14] * 8) + ([14] * 8) + ([14] * 8) + ([7] * 8) + ([14] * 8)
+interest_slot_groups = []
+_interest_cursor = 1550
+for _interest_group_size in interest_group_sizes:
+    interest_slot_groups.append(list(range(_interest_cursor, _interest_cursor + _interest_group_size)))
+    _interest_cursor += _interest_group_size
+assert len(interest_slot_groups) == 40 and _interest_cursor == 2054
+
+sparse_slot_ids += new_feature_slot_ids
+lr_slot_ids += new_feature_slot_ids
 all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+search_long_pay_seq+search_long_pay_catel3_seq+search_long_clk_seq+search_long_clk_catel3_seq+search_long_query_catel3_seq
 
 #第二套emb
@@ -54,6 +75,9 @@ ads_fea_slots = [7,8,9,10,46,49,50,51,52,53,54,55,56,57,59,60,61,62,63,64,67,68,
 local_model_dir = 'model'
 model_path = 'model/tfmodel.h5'
 padding_size = 2000
+
+interest_fusion_hidden_dim = 128
+interest_fusion_output_dim = 1 + fm_emb_size + 768
 
 #每 N 天保存一个 ckpt
 ckpt_save_days = 10
