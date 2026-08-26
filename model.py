@@ -446,7 +446,7 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, return_rankmixer_gate=False):
         sids, fids = inputs
         step = self.optimizer.iterations
 
@@ -573,7 +573,11 @@ class Model(tf.keras.Model):
         remain_dims = deep.shape[-1] % (self.rankmixer.t)
         additional_dims = tf.zeros([tf.shape(deep)[0], self.rankmixer.t - remain_dims])
         deep_input = tf.concat([deep, additional_dims], axis=1)
-        rankmixer_output = self.rankmixer(deep_input)
+        if return_rankmixer_gate:
+            rankmixer_output, rankmixer_gate = self.rankmixer(
+                deep_input, return_gate=True)
+        else:
+            rankmixer_output = self.rankmixer(deep_input)
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
 
@@ -599,5 +603,6 @@ class Model(tf.keras.Model):
             ext_score = ext_pred
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
+        if return_rankmixer_gate:
+            return ctcvr, cat_pred, click_pred, ext_pred, rankmixer_gate
         return ctcvr, cat_pred, click_pred, ext_pred
-

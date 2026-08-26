@@ -138,6 +138,13 @@ class RankMixer(tf.keras.layers.Layer):
             for _ in range(num_blocks)
         ]
         self.token_proj=tf.keras.layers.Dense(token_dim,activation=None,name="token_proj")
+        self.token_score = tf.keras.layers.Dense(
+            1,
+            activation=None,
+            kernel_initializer='zeros',
+            bias_initializer='zeros',
+            name='token_pool_score',
+        )
         # 添加参数日志输出
         logger.info("RankMixer initialized with parameters: t={}, token_dim={}, "
                     "num_blocks={}, num_heads={}, num_experts={}, "
@@ -146,7 +153,7 @@ class RankMixer(tf.keras.layers.Layer):
             hidden_ratio, l1_coeff, training))
 
 
-    def call(self, x): #【B，D】
+    def call(self, x, return_gate=False): #【B，D】
         # logger.info("RankMixer call method executed")
         # 划分token,映射
         batch_size = tf.shape(x)[0]
@@ -163,6 +170,10 @@ class RankMixer(tf.keras.layers.Layer):
 
         for block in self.blocks:
             x = block(x, training=self.training)
-        # Mean pooling over tokens
-        out = tf.reduce_mean(x, axis=1)  # [batch, token_dim]
+        # Zero initialization makes the initial softmax exactly uniform, so the
+        # first forward pass is identical to baseline mean pooling.
+        gate_weights = tf.nn.softmax(self.token_score(x), axis=1)
+        out = tf.reduce_sum(x * gate_weights, axis=1)  # [batch, token_dim]
+        if return_gate:
+            return out, tf.squeeze(gate_weights, axis=-1)
         return out

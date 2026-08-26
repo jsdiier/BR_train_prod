@@ -17,16 +17,34 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.token_gate_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
+    def _append_token_gate_diagnostic(self, day, entropy, max_weight,
+                                      collapse_ratio, position_mean):
+        if not self.token_gate_diagnostic_path:
+            return
+        positions = ["%.8f" % float(value) for value in position_mean.numpy().tolist()]
+        with open(self.token_gate_diagnostic_path, 'a') as handle:
+            handle.write("%s\t%d\t%.8f\t%.8f\t%.8f\t%s\n" % (
+                day,
+                self.gstep,
+                float(entropy.numpy()),
+                float(max_weight.numpy()),
+                float(collapse_ratio.numpy()),
+                '\t'.join(positions),
+            ))
+
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
         model = self.model
         with tf.GradientTape() as tape:
-            pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
+            (pred_buy, pred_cat, pred_click, pred_ext,
+             token_gate) = model(
+                [feat['fea_ids'], feat['fea_vals']], return_rankmixer_gate=True)
 
             loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
@@ -35,12 +53,24 @@ class Learner:
 
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
 
+            token_gate_safe = tf.clip_by_value(token_gate, 1e-8, 1.0)
+            token_gate_entropy = tf.reduce_mean(
+                -tf.reduce_sum(token_gate_safe * tf.math.log(token_gate_safe), axis=1))
+            per_sample_max = tf.reduce_max(token_gate, axis=1)
+            token_gate_max_weight = tf.reduce_mean(per_sample_max)
+            token_gate_collapse_ratio = tf.reduce_mean(
+                tf.cast(per_sample_max >= 0.9, tf.float32))
+            token_gate_position_mean = tf.reduce_mean(token_gate, axis=0)
+
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                token_gate_entropy, token_gate_max_weight,
+                token_gate_collapse_ratio, token_gate_position_mean)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +146,15 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.token_gate_diagnostic_path = os.path.join(
+            out_dir, 'token_gate_diagnostics.tsv')
+        if (not os.path.exists(self.token_gate_diagnostic_path) or
+                os.path.getsize(self.token_gate_diagnostic_path) == 0):
+            with open(self.token_gate_diagnostic_path, 'w') as handle:
+                position_columns = ['token_%02d' % index for index in range(self.model.rankmixer.t)]
+                handle.write('\t'.join([
+                    'day', 'global_step', 'entropy', 'mean_max_weight',
+                    'collapse_ratio'] + position_columns) + '\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +218,11 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             token_gate_entropy, token_gate_max_weight,
+             token_gate_collapse_ratio,
+             token_gate_position_mean) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -212,14 +255,21 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('token_gate/entropy', token_gate_entropy, step=global_step)
+                    tf.summary.scalar('token_gate/mean_max_weight', token_gate_max_weight, step=global_step)
+                    tf.summary.scalar('token_gate/collapse_ratio', token_gate_collapse_ratio, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
 
+                self._append_token_gate_diagnostic(
+                    day, token_gate_entropy, token_gate_max_weight,
+                    token_gate_collapse_ratio, token_gate_position_mean)
                 print(datetime.datetime.now(),
-                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
+                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d, gate_entropy: %.6f, gate_max: %.6f, gate_collapse: %.6f" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
-                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled,
+                        token_gate_entropy, token_gate_max_weight, token_gate_collapse_ratio))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)
