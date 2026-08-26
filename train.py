@@ -17,10 +17,46 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.pairwise_buy_weight = 0.1
+        self.pairwise_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
+
+    @staticmethod
+    def _buy_pairwise_loss(labels, predictions):
+        """One deterministic positive/negative pair per available BUY positive."""
+        labels = tf.reshape(tf.cast(labels, tf.float32), [-1])
+        predictions = tf.reshape(tf.cast(predictions, tf.float32), [-1])
+        predictions = tf.clip_by_value(predictions, 1e-6, 1.0 - 1e-6)
+        logits = tf.math.log(predictions) - tf.math.log1p(-predictions)
+        positive_logits = tf.boolean_mask(logits, labels > 0.5)
+        negative_logits = tf.boolean_mask(logits, labels <= 0.5)
+        pair_count = tf.minimum(tf.size(positive_logits), tf.size(negative_logits))
+
+        def non_empty_pairs():
+            margins = positive_logits[:pair_count] - negative_logits[:pair_count]
+            return tf.reduce_mean(tf.nn.softplus(-margins)), tf.reduce_mean(margins)
+
+        pairwise_loss, mean_margin = tf.cond(
+            pair_count > 0,
+            non_empty_pairs,
+            lambda: (tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32)),
+        )
+        return pairwise_loss, tf.cast(pair_count, tf.float32), mean_margin
+
+    def _append_pairwise_diagnostic(self, day, pairwise_loss, pair_count, mean_margin):
+        if not self.pairwise_diagnostic_path:
+            return
+        with open(self.pairwise_diagnostic_path, 'a') as handle:
+            handle.write("%s\t%d\t%.8f\t%d\t%.8f\n" % (
+                day,
+                self.gstep,
+                float(pairwise_loss.numpy()),
+                int(pair_count.numpy()),
+                float(mean_margin.numpy()),
+            ))
 
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
@@ -33,14 +69,23 @@ class Learner:
             loss_click = model.loss_bc(tf.expand_dims(feat['clk_label'], 1), pred_click)
             loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), pred_ext)
 
-            final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
+            pairwise_buy_loss, pair_count, pair_mean_margin = self._buy_pairwise_loss(
+                feat['cvr_label'], pred_buy)
+            pointwise_loss = (loss_buy * buy_weight + loss_cat * cat_weight +
+                              loss_click * click_weight + loss_ext * ext_weight)
+            # pairwise_buy_loss is scalar and intentionally broadcasts across the
+            # batch. The baseline differentiates a loss vector by summation, so
+            # this preserves a 0.1 coefficient relative to the mean pointwise loss.
+            final_loss = pointwise_loss + self.pairwise_buy_weight * pairwise_buy_loss
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                pairwise_buy_loss, pair_count, pair_mean_margin)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +161,10 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.pairwise_diagnostic_path = os.path.join(out_dir, 'pairwise_diagnostics.tsv')
+        if not os.path.exists(self.pairwise_diagnostic_path) or os.path.getsize(self.pairwise_diagnostic_path) == 0:
+            with open(self.pairwise_diagnostic_path, 'w') as handle:
+                handle.write('day\tglobal_step\tpairwise_loss\tpair_count\tmean_margin\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +228,9 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             pairwise_buy_loss, pair_count, pair_mean_margin) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -212,14 +263,20 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('pairwise_buy/loss', pairwise_buy_loss, step=global_step)
+                    tf.summary.scalar('pairwise_buy/pair_count', pair_count, step=global_step)
+                    tf.summary.scalar('pairwise_buy/mean_margin', pair_mean_margin, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
 
+                self._append_pairwise_diagnostic(
+                    day, pairwise_buy_loss, pair_count, pair_mean_margin)
                 print(datetime.datetime.now(),
-                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
+                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d, pairwise_loss: %.6f, pairs: %d, margin: %.6f" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
-                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled,
+                        pairwise_buy_loss, pair_count, pair_mean_margin))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)
