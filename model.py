@@ -165,6 +165,14 @@ class Model(tf.keras.Model):
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
         self.dense_concat3 = tf.keras.layers.Dense(1, activation="sigmoid",
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+        self.buy_residual = tf.keras.layers.Dense(
+            1,
+            activation=None,
+            kernel_initializer='zeros',
+            bias_initializer='zeros',
+            kernel_regularizer=regularizers.l2(model_conf.l2_reg),
+            name='buy_residual_logit',
+        )
 
     def set_summary_writer(self, writer, histogram_freq=100):
         self.summary_writer = writer
@@ -446,7 +454,7 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, return_buy_residual=False):
         sids, fids = inputs
         step = self.optimizer.iterations
 
@@ -589,7 +597,12 @@ class Model(tf.keras.Model):
 
         cat_pred = cat_pred_org
 
-        ctcvr = tf.math.multiply(click_pred, cvr_pred_org)
+        ctcvr_prior = tf.math.multiply(click_pred, cvr_pred_org)
+        clipped_prior = tf.clip_by_value(ctcvr_prior, 1e-6, 1.0 - 1e-6)
+        prior_logit = tf.math.log(clipped_prior) - tf.math.log1p(-clipped_prior)
+        residual_raw = self.buy_residual(concat)
+        residual_delta = 0.1 * tf.math.tanh(residual_raw)
+        ctcvr = tf.math.sigmoid(prior_logit + residual_delta)
 
         if self.is_save_model or self.pred:
             final_pred = ctcvr
@@ -599,5 +612,6 @@ class Model(tf.keras.Model):
             ext_score = ext_pred
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
+        if return_buy_residual:
+            return ctcvr, cat_pred, click_pred, ext_pred, residual_delta
         return ctcvr, cat_pred, click_pred, ext_pred
-

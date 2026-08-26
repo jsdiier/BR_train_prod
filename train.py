@@ -17,16 +17,31 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.buy_residual_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
+    def _append_buy_residual_diagnostic(self, day, mean, p95_abs, saturation_ratio):
+        if not self.buy_residual_diagnostic_path:
+            return
+        with open(self.buy_residual_diagnostic_path, 'a') as handle:
+            handle.write("%s\t%d\t%.8f\t%.8f\t%.8f\n" % (
+                day,
+                self.gstep,
+                float(mean.numpy()),
+                float(p95_abs.numpy()),
+                float(saturation_ratio.numpy()),
+            ))
+
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
         model = self.model
         with tf.GradientTape() as tape:
-            pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
+            (pred_buy, pred_cat, pred_click, pred_ext,
+             buy_residual_delta) = model(
+                [feat['fea_ids'], feat['fea_vals']], return_buy_residual=True)
 
             loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
@@ -35,12 +50,26 @@ class Learner:
 
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
 
+            residual_flat = tf.reshape(buy_residual_delta, [-1])
+            residual_abs_sorted = tf.sort(tf.abs(residual_flat))
+            residual_count = tf.size(residual_abs_sorted)
+            p95_index = tf.maximum(
+                tf.cast(tf.math.ceil(tf.cast(residual_count, tf.float32) * 0.95), tf.int32) - 1,
+                0,
+            )
+            residual_mean = tf.reduce_mean(residual_flat)
+            residual_p95_abs = residual_abs_sorted[p95_index]
+            residual_saturation_ratio = tf.reduce_mean(
+                tf.cast(tf.abs(residual_flat) >= 0.095, tf.float32))
+
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                residual_mean, residual_p95_abs, residual_saturation_ratio)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +145,12 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.buy_residual_diagnostic_path = os.path.join(
+            out_dir, 'buy_residual_diagnostics.tsv')
+        if (not os.path.exists(self.buy_residual_diagnostic_path) or
+                os.path.getsize(self.buy_residual_diagnostic_path) == 0):
+            with open(self.buy_residual_diagnostic_path, 'w') as handle:
+                handle.write('day\tglobal_step\tmean\tp95_abs\tsaturation_ratio\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +214,10 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             residual_mean, residual_p95_abs,
+             residual_saturation_ratio) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -212,14 +250,21 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('buy_residual/mean', residual_mean, step=global_step)
+                    tf.summary.scalar('buy_residual/p95_abs', residual_p95_abs, step=global_step)
+                    tf.summary.scalar('buy_residual/saturation_ratio', residual_saturation_ratio, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
 
+                self._append_buy_residual_diagnostic(
+                    day, residual_mean, residual_p95_abs,
+                    residual_saturation_ratio)
                 print(datetime.datetime.now(),
-                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
+                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d, residual_mean: %.6f, residual_p95_abs: %.6f, residual_saturation: %.6f" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
-                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled,
+                        residual_mean, residual_p95_abs, residual_saturation_ratio))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)
