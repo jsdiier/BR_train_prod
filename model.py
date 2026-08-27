@@ -109,6 +109,19 @@ class Model(tf.keras.Model):
         self.seq_pay_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_pay_seq')
         self.seq_12h_click_cate_id_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid',
                                                                          name='12h_click_cate_id_seq')
+        short_seq_reg = regularizers.l2(model_conf.l2_reg)
+        zero_init = tf.keras.initializers.Zeros()
+        self.seq_click_mean_residual = tf.keras.layers.Dense(
+            32, use_bias=False, kernel_initializer=zero_init,
+            kernel_regularizer=short_seq_reg, name='global_click_seq_mean_residual')
+        self.seq_pay_mean_residual = tf.keras.layers.Dense(
+            32, use_bias=False, kernel_initializer=zero_init,
+            kernel_regularizer=short_seq_reg, name='global_pay_seq_mean_residual')
+        self.seq_12h_mean_residual = tf.keras.layers.Dense(
+            32, use_bias=False, kernel_initializer=zero_init,
+            kernel_regularizer=short_seq_reg, name='12h_click_seq_mean_residual')
+        self.last_short_seq_residual_ratio = tf.constant(0.0, dtype=tf.float32)
+        self.last_short_seq_active_fraction = tf.constant(0.0, dtype=tf.float32)
         self.attention_layer_search_long_pay = DIN_attention_Layer([50, 20], 'sigmoid', name='search_pay_seq_long')
         self.attention_layer_search_long_clk = DIN_attention_Layer([50, 20], 'sigmoid', name='search_clk_seq_long')
         self.attention_layer_search_long_query = DIN_attention_Layer([50, 20], 'sigmoid', name='search_query_seq_long')
@@ -511,18 +524,38 @@ class Model(tf.keras.Model):
         # ads_emb = tf.reshape(ads_emb, [tf.shape(ads_emb)[0], -1])
 
         seq_outputs = []
+        short_seq_residual_ratios = []
+        short_seq_active_fractions = []
         for seq_name, seq_sid_ids in model_conf.seq_slot_dict.items():
             seq_slot_indices = self.slot_id_table.lookup(tf.constant(seq_sid_ids, dtype=tf.dtypes.int32))
             seq_input = tf.gather(pooled_output[:, :, 1:], seq_slot_indices, axis=1)
             seq_mask = tf.gather(slot_mask, seq_slot_indices, axis=1)
             if seq_name == 'user_click_seq':
                 seq_output = self.seq_click_attention_layer([global_query_input, seq_input, seq_input, seq_mask])
+                residual_layer = self.seq_click_mean_residual
             elif seq_name == 'user_pay_seq':
                 seq_output = self.seq_pay_attention_layer([global_query_input, seq_input, seq_input, seq_mask])
+                residual_layer = self.seq_pay_mean_residual
             elif seq_name == 'user_12h_click_cateid':
                 seq_output = self.seq_12h_click_cate_id_attention_layer(
                     [global_query_input, seq_input, seq_input, seq_mask])
+                residual_layer = self.seq_12h_mean_residual
+            valid_count = tf.reduce_sum(seq_mask, axis=1, keepdims=True)
+            masked_mean = tf.reduce_sum(
+                seq_input * tf.expand_dims(seq_mask, -1), axis=1) / tf.maximum(valid_count, 1.0)
+            residual = residual_layer(masked_mean)
+            active = tf.cast(valid_count > 0.0, residual.dtype)
+            residual = residual * active
+            short_seq_residual_ratios.append(
+                tf.linalg.global_norm([residual]) /
+                (tf.linalg.global_norm([seq_output]) + 1e-12))
+            short_seq_active_fractions.append(tf.reduce_mean(active))
+            seq_output = seq_output + residual
             seq_outputs.append(seq_output)
+        self.last_short_seq_residual_ratio = tf.reduce_mean(
+            tf.stack(short_seq_residual_ratios))
+        self.last_short_seq_active_fraction = tf.reduce_mean(
+            tf.stack(short_seq_active_fractions))
 
         # 搜索支付序列
         seq_slot_indices = self.slot_id_table.lookup(tf.constant(model_conf.search_long_pay_seq, dtype=tf.dtypes.int32))
@@ -600,4 +633,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-
