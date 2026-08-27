@@ -66,3 +66,42 @@ inference_benchmark_measure_batches = 100
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标
 uid_add_info_index = 5
+
+# Semantic-domain RankMixer schema. The user-approved schema removes 30
+# legacy slots and registers city_shop_cross slots 1530..1549.
+from semantic_domain_config import (
+    DOMAIN_SLOT_GROUPS,
+    DROPPED_LEGACY_SLOTS,
+    NEW_CITY_SHOP_CROSS_SLOTS,
+    ONETRANS_NS_TOKEN_ORDER,
+    ORDINARY_SLOT_IDS,
+    SEMANTIC_TOKEN_COUNT,
+    SEQUENCE_TOKEN_ORDER,
+)
+
+_dropped_legacy_slot_set = set(DROPPED_LEGACY_SLOTS)
+sparse_slot_ids = [
+    slot_id for slot_id in sparse_slot_ids
+    if slot_id not in _dropped_legacy_slot_set
+] + list(NEW_CITY_SHOP_CROSS_SLOTS)
+lr_slot_ids = [
+    slot_id for slot_id in lr_slot_ids
+    if slot_id not in _dropped_legacy_slot_set
+] + list(NEW_CITY_SHOP_CROSS_SLOTS)
+all_slot_ids = (
+    sparse_slot_ids + user_click_seq + user_pay_seq + u_12h_click_cateIds +
+    search_long_pay_seq + search_long_pay_catel3_seq +
+    search_long_clk_seq + search_long_clk_catel3_seq +
+    search_long_query_catel3_seq
+)
+
+if SEMANTIC_TOKEN_COUNT != 92:
+    raise ValueError("semantic token count must be exactly 92")
+if set(ORDINARY_SLOT_IDS) != set(sparse_slot_ids):
+    missing = sorted(set(sparse_slot_ids) - set(ORDINARY_SLOT_IDS))
+    extra = sorted(set(ORDINARY_SLOT_IDS) - set(sparse_slot_ids))
+    raise ValueError(
+        "semantic ordinary slot coverage mismatch: missing=%s extra=%s" %
+        (missing, extra))
+if len(all_slot_ids) != len(set(all_slot_ids)):
+    raise ValueError("all_slot_ids must remain unique")
