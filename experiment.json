@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "baseline": "BR_train_prod_baseline",
   "train_start_day": "20260303",
   "train_end_day": "20260720",
   "test_start_day": "20260721",
