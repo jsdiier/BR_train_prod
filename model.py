@@ -6,6 +6,7 @@ import model_conf
 import model_conf
 from tensorflow.python.framework import sparse_tensor
 from module.rankmixer_v4 import *
+from module.semantic_domain_rankmixer import SemanticDomainRankMixer
 from logger import logger
 from module.seq_attention import *
 
@@ -102,8 +103,37 @@ class Model(tf.keras.Model):
         # self.bn = tf.keras.layers.BatchNormalization(momentum=0.99,epsilon=1e-3,center=True,scale=False)
 
         # 初始化底层主网络
-        self.rankmixer = RankMixer(t=16, token_dim=768, num_heads=16, num_experts=16, hidden_ratio=2,
-                                   training=self.training)
+        self.semantic_token_dim = 256
+        self.rankmixer = SemanticDomainRankMixer(
+            token_count=model_conf.SEMANTIC_TOKEN_COUNT,
+            token_dim=self.semantic_token_dim,
+            num_heads=8,
+            num_blocks=2,
+            hidden_ratio=2,
+            name='semantic_domain_rankmixer')
+        semantic_reg = regularizers.l2(model_conf.l2_reg)
+        self.semantic_domain_norms = [
+            tf.keras.layers.LayerNormalization(
+                axis=-1, epsilon=1e-5, name='domain_%s_norm' % domain_name)
+            for domain_name in model_conf.ONETRANS_NS_TOKEN_ORDER
+        ]
+        self.semantic_domain_projections = [
+            tf.keras.layers.Dense(
+                model_conf.DOMAIN_TOKEN_COUNTS[domain_name] * self.semantic_token_dim,
+                activation=tf.nn.swish,
+                kernel_regularizer=semantic_reg,
+                name='domain_%s_projection' % domain_name)
+            for domain_name in model_conf.ONETRANS_NS_TOKEN_ORDER
+        ]
+        self.semantic_sequence_projections = [
+            tf.keras.layers.Dense(
+                self.semantic_token_dim,
+                activation=tf.nn.swish,
+                kernel_regularizer=semantic_reg,
+                name='sequence_%s_projection' % sequence_name)
+            for sequence_name in model_conf.SEQUENCE_TOKEN_ORDER
+        ]
+        self.last_semantic_token_mask = None
         # 初始化序列网络
         self.seq_click_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_click_seq')
         self.seq_pay_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_pay_seq')
@@ -347,6 +377,40 @@ class Model(tf.keras.Model):
         att = attention_layer([seq_query, x, x, mask])
         return combine_layer(tf.concat([att, pool], axis=-1))
 
+    def _build_ordinary_semantic_tokens(self, pooled_output, slot_mask):
+        """Build 187 tokens from fixed-order per-domain slot concatenation."""
+        domain_tokens = []
+        domain_token_masks = []
+        embedding_output = pooled_output[:, :, 1:]
+        for domain_index, domain_name in enumerate(model_conf.ONETRANS_NS_TOKEN_ORDER):
+            slot_ids = model_conf.DOMAIN_SLOT_GROUPS[domain_name]
+            token_count = model_conf.DOMAIN_TOKEN_COUNTS[domain_name]
+            slot_indices = self.slot_id_table.lookup(
+                tf.constant(slot_ids, dtype=tf.int32))
+            domain_embeddings = tf.gather(embedding_output, slot_indices, axis=1)
+            domain_slot_mask = tf.gather(slot_mask, slot_indices, axis=1)
+            mask_3d = tf.expand_dims(tf.cast(domain_slot_mask, domain_embeddings.dtype), -1)
+            masked_embeddings = domain_embeddings * mask_3d
+            fixed_order_concat = tf.reshape(
+                masked_embeddings,
+                [tf.shape(masked_embeddings)[0], len(slot_ids) * model_conf.fm_emb_size])
+            domain_mask = tf.cast(
+                tf.reduce_sum(domain_slot_mask, axis=1) > 0.0,
+                domain_embeddings.dtype)
+            projected = self.semantic_domain_projections[domain_index](
+                self.semantic_domain_norms[domain_index](fixed_order_concat))
+            projected = tf.reshape(
+                projected,
+                [tf.shape(projected)[0], token_count, self.semantic_token_dim])
+            projected = projected * tf.reshape(domain_mask, [-1, 1, 1])
+            domain_tokens.append(projected)
+            domain_token_masks.append(tf.tile(
+                tf.expand_dims(domain_mask, 1), [1, token_count]))
+
+        tokens = tf.concat(domain_tokens, axis=1)
+        token_mask = tf.concat(domain_token_masks, axis=1)
+        return tokens, token_mask
+
     def ads_seq_cross_layer(self, name, nn_inputs, ads_emb, ads_hidden_dim=64, ads_output_dim=1):
         # ads_input_dim = nn_inputs.get_shape().as_list()[-1]
         ads_input_dim = tf.shape(nn_inputs)[-1]
@@ -470,30 +534,13 @@ class Model(tf.keras.Model):
         # all_emb = tf.gather(pooled_output, emb_slot_indices, axis=1)
         # all_emb = tf.reshape(all_emb, [tf.shape(all_emb)[0], -1])
 
-        # 获取user_emb
-        emb_user_indices = self.slot_id_table.lookup(tf.constant(model_conf.user_fea_list, dtype=tf.dtypes.int32))
-        emb_user = tf.gather(pooled_output[:, :, 1:], emb_user_indices, axis=1)
-        emb_user = tf.reshape(
-            emb_user,
-            [tf.shape(emb_user)[0], len(model_conf.user_fea_list) * model_conf.fm_emb_size])
-        logger.info("emb_user shape is {}".format(emb_user.shape))
-
-        # 获取shop_emb
+        # Existing long-sequence encoders still use the candidate-shop query.
         emb_shop_indices = self.slot_id_table.lookup(tf.constant(model_conf.shop_fea_list, dtype=tf.dtypes.int32))
         emb_shop = tf.gather(pooled_output[:, :, 1:], emb_shop_indices, axis=1)
         emb_shop = tf.reshape(
             emb_shop,
             [tf.shape(emb_shop)[0], len(model_conf.shop_fea_list) * model_conf.fm_emb_size])
         logger.info("emb_shop shape is {}".format(emb_shop.shape))
-
-        # 获取interact_emb
-        emb_interact_indices = self.slot_id_table.lookup(
-            tf.constant(model_conf.interact_fea_list, dtype=tf.dtypes.int32))
-        emb_interact = tf.gather(pooled_output[:, :, 1:], emb_interact_indices, axis=1)
-        emb_interact = tf.reshape(
-            emb_interact,
-            [tf.shape(emb_interact)[0], len(model_conf.interact_fea_list) * model_conf.fm_emb_size])
-        logger.info("emb_interact shape is {}".format(emb_interact.shape))
 
         # 获取sequence_emb
 
@@ -511,6 +558,7 @@ class Model(tf.keras.Model):
         # ads_emb = tf.reshape(ads_emb, [tf.shape(ads_emb)[0], -1])
 
         seq_outputs = []
+        sequence_domain_masks = []
         for seq_name, seq_sid_ids in model_conf.seq_slot_dict.items():
             seq_slot_indices = self.slot_id_table.lookup(tf.constant(seq_sid_ids, dtype=tf.dtypes.int32))
             seq_input = tf.gather(pooled_output[:, :, 1:], seq_slot_indices, axis=1)
@@ -523,6 +571,8 @@ class Model(tf.keras.Model):
                 seq_output = self.seq_12h_click_cate_id_attention_layer(
                     [global_query_input, seq_input, seq_input, seq_mask])
             seq_outputs.append(seq_output)
+            sequence_domain_masks.append(tf.cast(
+                tf.reduce_sum(seq_mask, axis=1) > 0.0, tf.float32))
 
         # 搜索支付序列
         seq_slot_indices = self.slot_id_table.lookup(tf.constant(model_conf.search_long_pay_seq, dtype=tf.dtypes.int32))
@@ -540,6 +590,8 @@ class Model(tf.keras.Model):
             self.attention_layer_search_long_pay,
             self.pay_seq_ln, self.pay_seq_proj, self.pay_seq_combine)
         seq_outputs.append(pay_search_long_seq_out)
+        sequence_domain_masks.append(tf.cast(
+            tf.reduce_sum(search_pay_seq_mask, axis=1) > 0.0, tf.float32))
 
         # 搜索点击序列
         seq_slot_indices = self.slot_id_table.lookup(tf.constant(model_conf.search_long_clk_seq, dtype=tf.dtypes.int32))
@@ -555,6 +607,8 @@ class Model(tf.keras.Model):
             self.attention_layer_search_long_clk,
             self.clk_seq_ln, self.clk_seq_proj, self.clk_seq_combine)
         seq_outputs.append(clk_search_long_seq_out)
+        sequence_domain_masks.append(tf.cast(
+            tf.reduce_sum(click_seq_mask, axis=1) > 0.0, tf.float32))
 
         # 搜索query序列
         seq_slot_indices = self.slot_id_table.lookup(
@@ -566,14 +620,24 @@ class Model(tf.keras.Model):
             self.attention_layer_search_long_query,
             self.query_seq_ln, self.query_seq_proj, self.query_seq_combine)
         seq_outputs.append(query_search_long_seq_out)
+        sequence_domain_masks.append(tf.cast(
+            tf.reduce_sum(query_cate_mask, axis=1) > 0.0, tf.float32))
 
-        deep = tf.concat([emb_user, emb_shop, emb_interact] + seq_outputs, axis=-1)
+        ordinary_tokens, ordinary_token_mask = self._build_ordinary_semantic_tokens(
+            pooled_output, slot_mask)
+        sequence_token_mask = tf.stack(sequence_domain_masks, axis=1)
+        sequence_tokens = tf.stack([
+            projection(sequence_output)
+            for projection, sequence_output in zip(
+                self.semantic_sequence_projections, seq_outputs)
+        ], axis=1)
+        sequence_tokens = sequence_tokens * tf.expand_dims(sequence_token_mask, -1)
 
-        # 余数补dims
-        remain_dims = deep.shape[-1] % (self.rankmixer.t)
-        additional_dims = tf.zeros([tf.shape(deep)[0], self.rankmixer.t - remain_dims])
-        deep_input = tf.concat([deep, additional_dims], axis=1)
-        rankmixer_output = self.rankmixer(deep_input)
+        semantic_tokens = tf.concat([ordinary_tokens, sequence_tokens], axis=1)
+        semantic_token_mask = tf.concat(
+            [ordinary_token_mask, sequence_token_mask], axis=1)
+        self.last_semantic_token_mask = semantic_token_mask
+        rankmixer_output = self.rankmixer(semantic_tokens, semantic_token_mask)
 
         concat = tf.concat([lr, fm, rankmixer_output], axis=1)
 
@@ -600,4 +664,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-

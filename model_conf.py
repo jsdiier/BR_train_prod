@@ -66,3 +66,26 @@ inference_benchmark_measure_batches = 100
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标
 uid_add_info_index = 5
+
+# Semantic-domain RankMixer schema. The registered slot set must remain
+# exactly equal to the baseline; only token construction changes.
+from semantic_domain_config import (
+    DOMAIN_TOKEN_COUNTS,
+    DOMAIN_SLOT_GROUPS,
+    ONETRANS_NS_TOKEN_ORDER,
+    ORDINARY_SLOT_IDS,
+    ORDINARY_TOKEN_COUNT,
+    SEMANTIC_TOKEN_COUNT,
+    SEQUENCE_TOKEN_ORDER,
+)
+
+if SEMANTIC_TOKEN_COUNT != 193 or ORDINARY_TOKEN_COUNT != 187:
+    raise ValueError("semantic token count must be exactly 187+6=193")
+if set(ORDINARY_SLOT_IDS) != set(sparse_slot_ids):
+    missing = sorted(set(sparse_slot_ids) - set(ORDINARY_SLOT_IDS))
+    extra = sorted(set(ORDINARY_SLOT_IDS) - set(sparse_slot_ids))
+    raise ValueError(
+        "semantic ordinary slot coverage mismatch: missing=%s extra=%s" %
+        (missing, extra))
+if len(all_slot_ids) != len(set(all_slot_ids)):
+    raise ValueError("all_slot_ids must remain unique")
