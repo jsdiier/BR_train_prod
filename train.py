@@ -17,30 +17,121 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.cvr_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
+    def _diagnostic_weight_groups(self):
+        """Return shared-representation and CVR-private trainable variables."""
+        model = self.model
+        embedding_ids = {
+            id(v) for v in (model.emb_fm.trainable_weights +
+                            model.emb_din_ads.trainable_weights)
+        }
+        private_weights = (
+            model.buy_tower.trainable_weights + model.cat_tower.trainable_weights +
+            model.click_tower.trainable_weights + model.ext_tower.trainable_weights +
+            model.dense_concat.trainable_weights + model.dense_concat1.trainable_weights +
+            model.dense_concat2.trainable_weights + model.dense_concat3.trainable_weights
+        )
+        private_ids = {id(v) for v in private_weights}
+        shared_weights = [
+            v for v in model.trainable_weights
+            if id(v) not in embedding_ids and id(v) not in private_ids
+        ]
+        cvr_weights = model.buy_tower.trainable_weights + model.dense_concat.trainable_weights
+        if not shared_weights or not cvr_weights:
+            raise RuntimeError(
+                "invalid CVR diagnostic partition: shared=%d cvr=%d" %
+                (len(shared_weights), len(cvr_weights)))
+        return shared_weights, cvr_weights
+
+    @staticmethod
+    def _gradient_alignment(left, right, variables):
+        left = [tf.zeros_like(v) if g is None else g
+                for g, v in zip(left, variables)]
+        right = [tf.zeros_like(v) if g is None else g
+                 for g, v in zip(right, variables)]
+        dot = tf.add_n([tf.reduce_sum(a * b) for a, b in zip(left, right)])
+        left_norm = tf.linalg.global_norm(left)
+        right_norm = tf.linalg.global_norm(right)
+        cosine = dot / (left_norm * right_norm + 1e-12)
+        return cosine, left_norm, right_norm
+
+    @tf.function(experimental_relax_shapes=True)
+    def gradient_diagnostic_step(self, feat):
+        """Compare joint BUY and clicked-only CVR gradients without updating state."""
+        model = self.model
+        shared_weights, cvr_weights = self._diagnostic_weight_groups()
+        with tf.GradientTape(persistent=True) as tape:
+            (pred_buy, _, _, _, cvr_factor) = model(
+                [feat['fea_ids'], feat['fea_vals']], return_cvr_factor=True)
+            buy_label = tf.expand_dims(feat['cvr_label'], 1)
+            click_mask = tf.cast(tf.reshape(feat['clk_label'], [-1]), tf.float32)
+            joint_buy_loss = tf.reduce_mean(model.loss_bc(buy_label, pred_buy))
+            cvr_loss_per_example = model.loss_bc(buy_label, cvr_factor)
+            clicked_count = tf.reduce_sum(click_mask)
+            cvr_aux_loss = tf.reduce_sum(cvr_loss_per_example * click_mask) / tf.maximum(
+                clicked_count, 1.0)
+
+        joint_shared = tape.gradient(joint_buy_loss, shared_weights)
+        aux_shared = tape.gradient(cvr_aux_loss, shared_weights)
+        joint_cvr = tape.gradient(joint_buy_loss, cvr_weights)
+        aux_cvr = tape.gradient(cvr_aux_loss, cvr_weights)
+        del tape
+        shared_cosine, shared_joint_norm, shared_aux_norm = self._gradient_alignment(
+            joint_shared, aux_shared, shared_weights)
+        cvr_cosine, cvr_joint_norm, cvr_aux_norm = self._gradient_alignment(
+            joint_cvr, aux_cvr, cvr_weights)
+        return (shared_cosine, shared_joint_norm, shared_aux_norm,
+                cvr_cosine, cvr_joint_norm, cvr_aux_norm,
+                clicked_count, cvr_aux_loss)
+
+    def _append_cvr_diagnostic(self, day, values):
+        if not self.cvr_diagnostic_path:
+            return
+        values = [float(value.numpy()) for value in values]
+        with open(self.cvr_diagnostic_path, 'a') as handle:
+            handle.write(
+                "%s\t%d\t%.8f\t%.8f\t%.8f\t%.8f\t%.8f\t%.8f\t%.0f\t%.8f\n" %
+                tuple([day, self.gstep] + values))
+
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
         model = self.model
         with tf.GradientTape() as tape:
-            pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
+            pred_buy, pred_cat, pred_click, pred_ext, cvr_factor = model(
+                [feat['fea_ids'], feat['fea_vals']], return_cvr_factor=True)
 
-            loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
+            buy_label = tf.expand_dims(feat['cvr_label'], 1)
+            loss_buy = model.loss_bc(buy_label, pred_buy)
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
             loss_click = model.loss_bc(tf.expand_dims(feat['clk_label'], 1), pred_click)
             loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), pred_ext)
 
-            final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
+            click_mask = tf.cast(tf.reshape(feat['clk_label'], [-1]), tf.float32)
+            cvr_loss_per_example = model.loss_bc(buy_label, cvr_factor)
+            clicked_count = tf.reduce_sum(click_mask)
+            clicked_scale = tf.cast(tf.shape(click_mask)[0], tf.float32) / tf.maximum(
+                clicked_count, 1.0)
+            cvr_aux_loss_per_example = cvr_loss_per_example * click_mask * clicked_scale
+            cvr_aux_loss = tf.reduce_sum(cvr_loss_per_example * click_mask) / tf.maximum(
+                clicked_count, 1.0)
+
+            final_loss = (loss_buy * buy_weight + loss_cat * cat_weight +
+                          loss_click * click_weight + loss_ext * ext_weight +
+                          cvr_aux_loss_per_example)
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                cvr_aux_loss, clicked_count)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +207,13 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.cvr_diagnostic_path = os.path.join(out_dir, 'cvr_aux_gradient_diagnostics.tsv')
+        if (not os.path.exists(self.cvr_diagnostic_path) or
+                os.path.getsize(self.cvr_diagnostic_path) == 0):
+            with open(self.cvr_diagnostic_path, 'w') as handle:
+                handle.write(
+                    'day\tglobal_step\tshared_cosine\tshared_joint_norm\tshared_aux_norm\t'
+                    'cvr_cosine\tcvr_joint_norm\tcvr_aux_norm\tclicked_count\tcvr_aux_loss\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +277,9 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             cvr_aux_loss, clicked_count) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -204,6 +304,12 @@ class Learner:
                         eval_preds[t_idx].extend(pred_arrs[t_idx][sel].tolist())
 
             self.gstep += 1
+            diagnostic_values = None
+            if self.gstep % 100 == 0:
+                self.set_training_mode(False, False)
+                diagnostic_values = self.gradient_diagnostic_step(feat)
+                self.set_training_mode(True, False)
+                self._append_cvr_diagnostic(day, diagnostic_values)
             if train_writer is not None and self.gstep % 100 == 0:
                 global_step = model.optimizer.iterations.numpy()  # 只在打点时同步一次,作 x 轴
                 with train_writer.as_default():
@@ -212,14 +318,20 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('loss/cvr_aux', cvr_aux_loss, step=global_step)
+                    tf.summary.scalar('data/cvr_aux_clicked_count', clicked_count, step=global_step)
+                    if diagnostic_values is not None:
+                        tf.summary.scalar('cvr_aux_gradient/shared_cosine', diagnostic_values[0], step=global_step)
+                        tf.summary.scalar('cvr_aux_gradient/cvr_cosine', diagnostic_values[3], step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
 
                 print(datetime.datetime.now(),
-                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
+                        "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d, cvr_aux_loss: %.6f, clicked: %.0f" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
-                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+                        tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled,
+                        cvr_aux_loss, clicked_count))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)

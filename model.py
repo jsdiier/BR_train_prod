@@ -446,7 +446,7 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, return_cvr_factor=False):
         sids, fids = inputs
         step = self.optimizer.iterations
 
@@ -599,5 +599,6 @@ class Model(tf.keras.Model):
             ext_score = ext_pred
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
+        if return_cvr_factor:
+            return ctcvr, cat_pred, click_pred, ext_pred, cvr_pred_org
         return ctcvr, cat_pred, click_pred, ext_pred
-
