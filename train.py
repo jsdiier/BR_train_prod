@@ -17,6 +17,7 @@ class Learner:
         self.model = None
         self.ema_vars = None
         self.ema_decay = 0.999
+        self.token_mixing_diagnostic_path = None
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -40,7 +41,9 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        token_diagnostics = model.rankmixer.token_mixing_diagnostics()
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext) + token_diagnostics
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -116,6 +119,12 @@ class Learner:
             except Exception:
                 pass
         metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+        self.token_mixing_diagnostic_path = os.path.join(
+            out_dir, 'rankmixer_token_mixing_diagnostics.tsv')
+        if (not os.path.exists(self.token_mixing_diagnostic_path) or
+                os.path.getsize(self.token_mixing_diagnostic_path) == 0):
+            with open(self.token_mixing_diagnostic_path, 'w') as handle:
+                handle.write('day\tglobal_step\tresidual_ratio\tkernel_norm\toffdiag_ratio\n')
         task_names = ['buy', 'cat', 'click', 'ext']
 
         mfout = open(metric_path, 'a')
@@ -179,7 +188,10 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext,
+             token_residual_ratio, token_kernel_norm,
+             token_offdiag_ratio) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -212,6 +224,9 @@ class Learner:
                     tf.summary.scalar('loss_click', tf.reduce_mean(loss_click), step=global_step)
                     tf.summary.scalar('loss_ext', tf.reduce_mean(loss_ext), step=global_step)
                     tf.summary.scalar('loss/total', tf.reduce_mean(final_loss), step=global_step)
+                    tf.summary.scalar('rankmixer_token_mixing/residual_ratio', token_residual_ratio, step=global_step)
+                    tf.summary.scalar('rankmixer_token_mixing/kernel_norm', token_kernel_norm, step=global_step)
+                    tf.summary.scalar('rankmixer_token_mixing/offdiag_ratio', token_offdiag_ratio, step=global_step)
 
                     tf.summary.scalar('data/pos_rate_buy', self.pos[0] / max(self.cnt, 1), step=global_step)
                     tf.summary.scalar('data/pos_rate_click', self.pos[2] / max(self.cnt, 1), step=global_step)
@@ -220,6 +235,13 @@ class Learner:
                         "day %s steps: %d, buy loss: %04f, pos: %d, cnt: %d,  cat loss: %04f, cat pos: %d,  click loss: %04f, click pos: %d,  ext loss: %04f, ext pos: %d, sampled: %d" % (
                         day, self.gstep, tf.reduce_mean(loss_buy), self.pos[0], self.cnt, tf.reduce_mean(loss_cat), self.pos[1],
                         tf.reduce_mean(loss_click), self.pos[2], tf.reduce_mean(loss_ext), self.pos[3], n_sampled))
+
+                with open(self.token_mixing_diagnostic_path, 'a') as handle:
+                    handle.write("%s\t%d\t%.8f\t%.8f\t%.8f\n" % (
+                        day, self.gstep,
+                        float(token_residual_ratio.numpy()),
+                        float(token_kernel_norm.numpy()),
+                        float(token_offdiag_ratio.numpy())))
 
         if step < 0:
             print(datetime.datetime.now(), "day %s finish, no batches" % day)

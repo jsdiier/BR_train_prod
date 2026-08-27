@@ -11,16 +11,39 @@ class MultiHeadTokenMixing(tf.keras.layers.Layer):
         self.token_dim = token_dim
         self.num_heads = num_heads or t
         self.head_dim = token_dim // self.num_heads
+        if token_dim % self.num_heads != 0:
+            raise ValueError("token_dim must be divisible by num_heads")
+        self.learned_token_axis = tf.keras.layers.Dense(
+            t,
+            use_bias=False,
+            kernel_initializer='zeros',
+            name='learned_token_axis')
+        self.last_residual_ratio = tf.constant(0.0, dtype=tf.float32)
+        self.last_offdiag_ratio = tf.constant(0.0, dtype=tf.float32)
 
     def call(self, x):
         # x: [B, T, D]
         B = tf.shape(x)[0]
 
-        x = tf.reshape(x, [B, self.t, self.num_heads, self.head_dim])
-        x = tf.transpose(x, [0, 2, 1, 3])      # [B, H, T, D/H]
-        x = tf.reshape(x, [B, self.num_heads, self.t * self.head_dim])
-        x = tf.reshape(x, [B, self.t, self.token_dim])
-        return x
+        deterministic = tf.reshape(x, [B, self.t, self.num_heads, self.head_dim])
+        deterministic = tf.transpose(deterministic, [0, 2, 1, 3])
+        deterministic = tf.reshape(deterministic, [B, self.num_heads, self.t * self.head_dim])
+        deterministic = tf.reshape(deterministic, [B, self.t, self.token_dim])
+
+        # Learn a residual across the token axis while preserving the baseline
+        # deterministic path exactly at initialization.
+        token_axis = tf.transpose(x, [0, 2, 1])  # [B, D, T]
+        learned_delta = self.learned_token_axis(token_axis)
+        learned_delta = tf.transpose(learned_delta, [0, 2, 1])
+        self.last_residual_ratio = (
+            tf.linalg.global_norm([learned_delta]) /
+            (tf.linalg.global_norm([deterministic]) + 1e-12))
+
+        kernel_abs = tf.abs(self.learned_token_axis.kernel)
+        diagonal_abs = tf.reduce_sum(tf.abs(tf.linalg.diag_part(kernel_abs)))
+        total_abs = tf.reduce_sum(kernel_abs)
+        self.last_offdiag_ratio = (total_abs - diagonal_abs) / (total_abs + 1e-12)
+        return deterministic + learned_delta
 
 
 class Gelu_Expert(tf.keras.layers.Layer):
@@ -166,3 +189,14 @@ class RankMixer(tf.keras.layers.Layer):
         # Mean pooling over tokens
         out = tf.reduce_mean(x, axis=1)  # [batch, token_dim]
         return out
+
+    def token_mixing_diagnostics(self):
+        residual_ratios = [block.token_mixing.last_residual_ratio for block in self.blocks]
+        offdiag_ratios = [block.token_mixing.last_offdiag_ratio for block in self.blocks]
+        kernel_norms = [
+            tf.linalg.global_norm([block.token_mixing.learned_token_axis.kernel])
+            for block in self.blocks
+        ]
+        return (tf.reduce_mean(tf.stack(residual_ratios)),
+                tf.reduce_mean(tf.stack(kernel_norms)),
+                tf.reduce_mean(tf.stack(offdiag_ratios)))
