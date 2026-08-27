@@ -1,0 +1,5 @@
+experiment	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_bs_lr_ema_weights	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_buy_pairwise_auc_loss	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_buy_residual_logit_correction	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_rankmixer_gated_token_pooling	yes	yes	yes	yes	yes	yes
