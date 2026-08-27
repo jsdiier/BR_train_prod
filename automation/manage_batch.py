@@ -27,6 +27,12 @@ def main():
         if not candidates:
             print("[BATCH] no unbatched runs")
             return 0
+        # Freeze one explicit group at a time. This keeps user-mandated
+        # fixed-only factorials separate from later agent-generated runs.
+        candidates.sort(key=lambda state: state.get("created_at", ""))
+        batch_group = candidates[0].get("batch_group", "default")
+        candidates = [state for state in candidates
+                      if state.get("batch_group", "default") == batch_group]
         batch_id = "batch_%s" % __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         baselines = {state["baseline"] for state in candidates}
         if len(baselines) != 1:
@@ -34,11 +40,13 @@ def main():
             return 1
         batch = {"schema_version": 1, "batch_id": batch_id, "created_at": now(),
                  "baseline": baselines.pop(), "members": [state["run_id"] for state in candidates],
+                 "batch_group": batch_group,
                  "status": "waiting", "result_dir": None}
         batch_path = os.path.join(batches_dir, batch_id + ".json")
         atomic_json(batch_path, batch)
         atomic_json(active_path, {"batch_id": batch_id})
-        print("[BATCH] froze %d runs into %s" % (len(candidates), batch_id))
+        print("[BATCH] froze %d runs from group %s into %s" % (
+            len(candidates), batch_group, batch_id))
         active = {"batch_id": batch_id}
     else:
         active = load_json(active_path)

@@ -11,10 +11,10 @@ from common import atomic_json, load_json, now, run_files
 
 
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
-REQUIRED = (
+FIXED_REQUIRED = (
     "baseline", "train_start_day", "train_end_day", "test_start_day", "test_end_day",
-    "auto_test_start_ckpt_day", "auto_test_end_day",
 )
+ROLLING_REQUIRED = ("auto_test_start_ckpt_day", "auto_test_end_day")
 
 
 def sync_remote_heads(repo_url, tools_dir):
@@ -56,14 +56,17 @@ def validate_config(branch, value):
         raise ValueError("experiment.json must contain a JSON object")
     if value.get("enabled") is not True:
         return None
-    missing = [key for key in REQUIRED if not value.get(key)]
+    rolling_enabled = value.get("rolling_enabled", True) is not False
+    required = FIXED_REQUIRED + (ROLLING_REQUIRED if rolling_enabled else ())
+    missing = [key for key in required if not value.get(key)]
     if missing:
         raise ValueError("missing required fields: %s" % ",".join(missing))
-    for key in REQUIRED[1:]:
+    for key in required[1:]:
         if not re.fullmatch(r"\d{8}", str(value[key])):
             raise ValueError("%s must be YYYYMMDD" % key)
     resolved = dict(value)
     resolved["branch"] = branch
+    resolved["rolling_enabled"] = rolling_enabled
     resolved["require_inference_benchmark"] = bool(
         value.get("require_inference_benchmark", True))
     return resolved
@@ -129,6 +132,7 @@ def main():
             state_path = os.path.join(args.state_dir, "runs", run_id + ".json")
             state = {"schema_version": 1, "run_id": run_id, "branch": branch,
                      "commit": commit, "attempt": 1, "baseline": config["baseline"],
+                     "batch_group": config.get("batch_group", "default"),
                      "status": "launching", "adopted": False, "job_uuid": None,
                      "require_inference_benchmark": config["require_inference_benchmark"],
                      "config": config, "experiment_dir": exp_dir, "created_at": now(),

@@ -135,11 +135,12 @@ def main():
             fixed = [sys.executable, os.path.join(args.tools_dir, "test_multi.py"),
                      batch["baseline"]] + branches + [states[0]["config"]["test_end_day"]]
             run_capture(fixed, os.path.join(out, "fixed_window.txt"))
-            rolling = [sys.executable, os.path.join(args.tools_dir, "rolling_auc_compare.py"),
-                       batch["baseline"]] + branches + ["--base-dir", args.base_dir,
-                       "-o", os.path.join(out, "rolling_auc.html")]
-            run_capture(rolling, os.path.join(out, "rolling_auc_generation.txt"))
-            write_combined_rolling(args.base_dir, batch["baseline"], done, out)
+            if states[0]["config"].get("rolling_enabled", True) is not False:
+                rolling = [sys.executable, os.path.join(args.tools_dir, "rolling_auc_compare.py"),
+                           batch["baseline"]] + branches + ["--base-dir", args.base_dir,
+                           "-o", os.path.join(out, "rolling_auc.html")]
+                run_capture(rolling, os.path.join(out, "rolling_auc_generation.txt"))
+                write_combined_rolling(args.base_dir, batch["baseline"], done, out)
 
     batch["status"] = "completed_with_failures" if failed else "completed"
     batch["result_dir"], batch["completed_at"] = out, now()

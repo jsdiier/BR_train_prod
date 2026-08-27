@@ -55,3 +55,27 @@ crontab 和新的控制器。
 
 新实验在已有 active batch 运行期间只创建 run 状态，不会混入当前批次。当前批次完成后，
 未入批的运行会由 `manage_batch.py` 冻结为下一批。
+
+只有 fixed-window、没有 rolling 的实验使用：
+
+```json
+{
+  "enabled": true,
+  "rolling_enabled": false,
+  "batch_group": "manual_feature_factorial_20260827",
+  "baseline": "fixed_window_control_branch",
+  "train_start_day": "20260303",
+  "train_end_day": "20260820",
+  "test_start_day": "20260821",
+  "test_end_day": "20260823",
+  "require_inference_benchmark": true
+}
+```
+
+fixed-only run 只校验目标 checkpoint、fixed test 四任务日志、测试截止日期和
+inference benchmark，不要求 `auto_test_*`、rolling 日志或 `rolling_metrics.tsv`；
+batch 聚合也只生成 fixed 与 inference 结果。
+
+可选 `batch_group` 用于隔离并发发现的实验组合。同一组会冻结为一个 batch；不同组
+按最早发现顺序分别聚合，不会把 User-mandated Runs 与后续 Agent-generated Runs
+混在同一 batch。未配置时使用 `default`。

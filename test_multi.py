@@ -42,8 +42,9 @@ def resolve_exp_dir(exp: str) -> str:
 # ──────────────────────────────────────────────
 def find_latest_test_log(exp_dir: str, dt: str = None) -> str:
     """
-    在 <exp_dir>/log/ 下找普通或滚动测试日志：
+    在 <exp_dir>/log/ 下找普通、fixed-only 或滚动测试日志：
       test_log_<测试截止日>_<启动时间戳>
+      fixed_test_ckpt_<ckpt日>_from_<测试开始日>_to_<测试截止日>_<启动时间戳>
       rolling_test_ckpt_<ckpt日>_from_<测试开始日>_to_<测试截止日>_<启动时间戳>
 
     - dt 为 None: 在全部可识别测试日志里，按启动时间戳取最新一份。
@@ -58,7 +59,7 @@ def find_latest_test_log(exp_dir: str, dt: str = None) -> str:
     patterns = (
         re.compile(r"^test_log_(?P<end_day>\d{8})_(?P<start_ts>\d+)$"),
         re.compile(
-            r"^rolling_test_ckpt_(?P<ckpt_day>\d{8})_"
+            r"^(?:rolling|fixed)_test_ckpt_(?P<ckpt_day>\d{8})_"
             r"from_(?P<test_start_day>\d{8})_to_(?P<end_day>\d{8})_"
             r"(?P<start_ts>\d+)$"
         ),
@@ -80,8 +81,8 @@ def find_latest_test_log(exp_dir: str, dt: str = None) -> str:
 
     if not candidates:
         if dt is not None:
-            raise FileNotFoundError(f"在 {log_dir} 下未找到测试截止日 dt={dt} 的普通/滚动测试日志")
-        raise FileNotFoundError(f"在 {log_dir} 下未找到普通/滚动测试日志")
+            raise FileNotFoundError(f"在 {log_dir} 下未找到测试截止日 dt={dt} 的普通/fixed/滚动测试日志")
+        raise FileNotFoundError(f"在 {log_dir} 下未找到普通/fixed/滚动测试日志")
 
     candidates.sort(key=lambda x: x[0])
     latest_fname = candidates[-1][1]

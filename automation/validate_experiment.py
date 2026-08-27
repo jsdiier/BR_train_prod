@@ -12,7 +12,7 @@ from common import dates, next_day, previous_day
 
 TASKS = {"buy", "cat", "click", "ext"}
 LOG_RE = re.compile(
-    r"rolling_test_ckpt_(\d{8})_from_(\d{8})_to_(\d{8})_(\d{12,14})$"
+    r"(?:rolling|fixed)_test_ckpt_(\d{8})_from_(\d{8})_to_(\d{8})_(\d{12,14})$"
 )
 METRIC_RE = re.compile(
     r"test_(buy|cat|click|ext)\s+auc:([\d.]+)\s+gauc:([\d.]+)\s+"
@@ -33,7 +33,9 @@ def checkpoint_ok(exp_dir, day):
 
 def latest_logs(exp_dir):
     selected = {}
-    for path in glob.glob(os.path.join(exp_dir, "log", "rolling_test_ckpt_*")):
+    candidates = glob.glob(os.path.join(exp_dir, "log", "rolling_test_ckpt_*"))
+    candidates.extend(glob.glob(os.path.join(exp_dir, "log", "fixed_test_ckpt_*")))
+    for path in candidates:
         match = LOG_RE.match(os.path.basename(path))
         if not match or not os.path.isfile(path):
             continue
@@ -71,12 +73,15 @@ def parse_log(path):
 def validate(exp_dir, config):
     result = {"ok": False, "checks": {}, "errors": [], "artifacts": {}}
     train_end = config["train_end_day"]
-    seed = config["auto_test_start_ckpt_day"]
-    rolling_end = config["auto_test_end_day"]
+    rolling_enabled = config.get("rolling_enabled", True) is not False
+    seed = config.get("auto_test_start_ckpt_day")
+    rolling_end = config.get("auto_test_end_day")
 
-    required_ckpts = [train_end, seed]
-    if next_day(seed) <= previous_day(rolling_end):
-        required_ckpts.extend(dates(next_day(seed), previous_day(rolling_end)))
+    required_ckpts = [train_end]
+    if rolling_enabled:
+        required_ckpts.append(seed)
+        if next_day(seed) <= previous_day(rolling_end):
+            required_ckpts.extend(dates(next_day(seed), previous_day(rolling_end)))
     required_ckpts = sorted(set(required_ckpts))
     missing_ckpts = [day for day in required_ckpts if not checkpoint_ok(exp_dir, day)]
     result["checks"]["checkpoints"] = not missing_ckpts
@@ -86,8 +91,9 @@ def validate(exp_dir, config):
     logs = latest_logs(exp_dir)
     fixed_key = (train_end, config["test_start_day"], config["test_end_day"])
     expected = [fixed_key]
-    for day in dates(next_day(seed), rolling_end):
-        expected.append((previous_day(day), day, day))
+    if rolling_enabled:
+        for day in dates(next_day(seed), rolling_end):
+            expected.append((previous_day(day), day, day))
     missing_logs, invalid_logs = [], []
     fixed_perf, fixed_perf_config = False, None
     for key in expected:
@@ -104,29 +110,35 @@ def validate(exp_dir, config):
             result["artifacts"]["fixed_log"] = path
     result["checks"]["fixed_log_parseable"] = fixed_key in logs and not any(
         item.startswith("/".join(fixed_key)) for item in invalid_logs)
-    result["checks"]["rolling_logs_complete"] = not missing_logs and not invalid_logs
+    if rolling_enabled:
+        result["checks"]["rolling_logs_complete"] = not missing_logs and not invalid_logs
     if missing_logs:
         result["errors"].append("missing test logs: " + ",".join(missing_logs))
     if invalid_logs:
         result["errors"].append("invalid test logs: " + ";".join(invalid_logs))
 
-    summary = os.path.join(exp_dir, "model", "rolling_metrics.tsv")
-    summary_keys = set()
-    try:
-        with open(summary, "r", encoding="utf-8", errors="replace") as handle:
-            for row in csv.DictReader(handle, delimiter="\t"):
-                summary_keys.add((row["checkpoint_day"], row["test_start_day"],
-                                  row["test_end_day"], row["task"]))
-        wanted = {(a, b, c, task) for a, b, c in expected for task in TASKS}
-        summary_ok = wanted.issubset(summary_keys)
-    except (OSError, KeyError, TypeError):
-        summary_ok = False
-    result["checks"]["rolling_summary_complete"] = summary_ok
-    result["checks"]["last_test_day_correct"] = any(
-        key[2] == rolling_end for key in summary_keys)
-    result["artifacts"]["rolling_metrics"] = summary
-    if not summary_ok:
-        result["errors"].append("rolling_metrics.tsv is missing required rows")
+    if rolling_enabled:
+        summary = os.path.join(exp_dir, "model", "rolling_metrics.tsv")
+        summary_keys = set()
+        try:
+            with open(summary, "r", encoding="utf-8", errors="replace") as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    summary_keys.add((row["checkpoint_day"], row["test_start_day"],
+                                      row["test_end_day"], row["task"]))
+            wanted = {(a, b, c, task) for a, b, c in expected for task in TASKS}
+            summary_ok = wanted.issubset(summary_keys)
+        except (OSError, KeyError, TypeError):
+            summary_ok = False
+        result["checks"]["rolling_summary_complete"] = summary_ok
+        result["checks"]["last_test_day_correct"] = any(
+            key[2] == rolling_end for key in summary_keys)
+        result["artifacts"]["rolling_metrics"] = summary
+        if not summary_ok:
+            result["errors"].append("rolling_metrics.tsv is missing required rows")
+    else:
+        result["checks"]["last_test_day_correct"] = (
+            fixed_key in logs and fixed_key[2] == config["test_end_day"])
+        result["artifacts"]["rolling_metrics"] = None
 
     require_perf = bool(config.get("require_inference_benchmark", True))
     result["checks"]["inference_benchmark_complete"] = fixed_perf or not require_perf
