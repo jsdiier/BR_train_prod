@@ -6,6 +6,9 @@ source ./common.conf
 set -euo pipefail
 set -x
 
+# Do not inherit an accidental collector flag into validation or fixed testing.
+unset SALIENCY_COLLECT SALIENCY_EXPECTED_SLOT_COUNT SALIENCY_REMAIN_COUNT || true
+
 mkdir -p log model
 
 checkpoint_dir() {
@@ -14,6 +17,17 @@ checkpoint_dir() {
 
 checkpoint_ready() {
     [[ -f "$(checkpoint_dir "$1")/checkpoint" ]]
+}
+
+source_checkpoint_ready() {
+    [[ -d "$source_checkpoint_path" && -f "$source_checkpoint_path/checkpoint" ]]
+}
+
+saliency_assets_ready() {
+    [[ -s "log/fea_importance_saliency_${train_start_day}_${train_end_day}.tsv" \
+       && -s "log/saliency_top${saliency_remain_count}_slots.txt" \
+       && -s "log/saliency_pruned$((saliency_expected_slot_count - saliency_remain_count))_slots.txt" \
+       && -s "log/saliency_slot_audit.json" ]]
 }
 
 data_day_ready() {
@@ -41,25 +55,29 @@ assert_data_range() {
     done
 }
 
-run_train_range() {
-    local data_root=$1
-    local start_day=$2
-    local end_day=$3
-    local restore_day=${4:-}
+run_saliency_train() {
     local nowt
     nowt=$(date +%Y%m%d%H%M%S)
-    local train_args=(-data "$data_root" -start_day "$start_day" -end_day "$end_day" -dump_serving_model 0)
-    if [[ -n "$restore_day" ]]; then
-        if ! checkpoint_ready "$restore_day"; then
-            echo "restore checkpoint is not ready: $restore_day"
-            exit 1
-        fi
-        train_args+=( -checkpoint_path "$(checkpoint_dir "$restore_day")" )
-    fi
+    local train_args=(
+        -data "$new_train_hdfs_dir"
+        -start_day "$train_start_day"
+        -end_day "$train_end_day"
+        -checkpoint_path "$source_checkpoint_path"
+        -dump_serving_model 0
+    )
+    export SALIENCY_COLLECT=1
+    export SALIENCY_EXPECTED_SLOT_COUNT="$saliency_expected_slot_count"
+    export SALIENCY_REMAIN_COUNT="$saliency_remain_count"
     CLASSPATH=$(${HADOOP_HDFS_HOME}/bin/hadoop classpath --glob) \
-    $python -u train.py "${train_args[@]}" > "log/fixed_train_${start_day}_${end_day}_${nowt}" 2>&1
-    if ! checkpoint_ready "$end_day"; then
-        echo "training finished but target checkpoint was not created: $end_day"
+    $python -u train.py "${train_args[@]}" \
+        > "log/saliency_train_${train_start_day}_${train_end_day}_${nowt}" 2>&1
+    unset SALIENCY_COLLECT SALIENCY_EXPECTED_SLOT_COUNT SALIENCY_REMAIN_COUNT
+    if ! checkpoint_ready "$train_end_day"; then
+        echo "training finished but target checkpoint was not created: $train_end_day"
+        exit 1
+    fi
+    if ! saliency_assets_ready; then
+        echo "training finished but one or more Saliency assets are missing"
         exit 1
     fi
 }
@@ -67,17 +85,20 @@ run_train_range() {
 HADOOP_HDFS_HOME=/usr/local/hadoop-current
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$HADOOP_HDFS_HOME/lib/native:${JAVA_HOME:-/usr/lib/jvm/java-8-openjdk-amd64}/jre/lib/amd64/server
 
-# Slots are registered from day one, while old-source samples keep the gated
-# residual exactly zero. The run starts independently from random weights.
-assert_data_day "$old_train_hdfs_dir" "$old_train_end_day"
-if ! checkpoint_ready "$old_train_end_day"; then
-    run_train_range "$old_train_hdfs_dir" "$train_start_day" "$old_train_end_day"
+# The parent checkpoint is an immutable input artifact. Never infer the source
+# from this run's model.done, and never write into the parent experiment.
+if ! source_checkpoint_ready; then
+    echo "source checkpoint is not ready: $source_checkpoint_path"
+    exit 1
 fi
 
-# Restore only this run's own checkpoint before switching to the new source.
-assert_data_range "$new_train_hdfs_dir" "$new_train_start_day" "$train_end_day"
+assert_data_range "$new_train_hdfs_dir" "$train_start_day" "$train_end_day"
 if ! checkpoint_ready "$train_end_day"; then
-    run_train_range "$new_train_hdfs_dir" "$new_train_start_day" "$train_end_day" "$old_train_end_day"
+    run_saliency_train
+elif ! saliency_assets_ready; then
+    echo "checkpoint $train_end_day exists but Saliency assets are incomplete"
+    echo "refusing to reuse a checkpoint without its in-memory gradient accumulation"
+    exit 1
 fi
 
 assert_data_range "$new_train_hdfs_dir" "$test_start_day" "$test_end_day"
@@ -88,4 +109,4 @@ if [[ "${fixed_test_resume:-0}" -ne 1 || ! -f "$marker" ]]; then
     touch "$marker"
 fi
 
-echo "fixed-only experiment completed: checkpoint=${train_end_day}, test=[${test_start_day},${test_end_day}]"
+echo "Saliency full-slot control completed: checkpoint=${train_end_day}, test=[${test_start_day},${test_end_day}], remain=${saliency_remain_count}"

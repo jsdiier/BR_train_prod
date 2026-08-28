@@ -1,3 +1,18 @@
+# BR_train_prod_ema_interest_feature_saliency_fullslot_control
+
+Manual-only stage-one run for global slot Saliency collection.
+
+- Parent checkpoint (read-only): `BR_train_prod_ema_interest_feature_fusion/20260820`
+- Train and collect: chenpinyuan `20260821..20260825`
+- Fixed test: chenpinyuan `20260826..20260828`
+- Global loss: `BUY + CAT + CLICK + EXT`
+- Registered slots: 2056; derived Top-K: 1700; derived prune set: 356
+- No rolling evaluation and no serving export
+
+Run with `bash submit_luban.sh`. The Luban entrypoint is `fixed_test.sh`.
+
+## Legacy framework notes
+
 # luban
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。

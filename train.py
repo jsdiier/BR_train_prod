@@ -10,6 +10,7 @@ import model_conf
 from model import Model
 from tensorflow.keras import regularizers
 import time
+import json
 from sklearn import metrics
 
 class Learner:
@@ -44,6 +45,56 @@ class Learner:
                 pred_buy, pred_cat, pred_click, pred_ext,
                 model.last_new_feature_sample_rate,
                 model.last_interest_group_active_rate)
+
+    def train_step_with_saliency(self, feat):
+        """Train normally while collecting the four-task loss gradient by slot."""
+        model = self.model
+        with tf.GradientTape(persistent=True) as tape:
+            pred_buy, pred_cat, pred_click, pred_ext = model(
+                [feat['fea_ids'], feat['fea_vals']], training=True)
+            loss_buy = model.loss_bc(
+                tf.expand_dims(feat['cvr_label'], 1), pred_buy)
+            loss_cat = model.loss_bc(
+                tf.expand_dims(feat['cat_label'], 1), pred_cat)
+            loss_click = model.loss_bc(
+                tf.expand_dims(feat['clk_label'], 1), pred_click)
+            loss_ext = model.loss_bc(
+                tf.expand_dims(feat['ext_label'], 1), pred_ext)
+            final_loss = loss_buy + loss_cat + loss_click + loss_ext
+            pooled_target = model._last_pooled_main
+            if pooled_target is None:
+                raise RuntimeError('Saliency pooled target was not captured')
+
+        gradients = tape.gradient(final_loss, model.trainable_weights)
+        pooled_gradient = tape.gradient(final_loss, pooled_target)
+        del tape
+        if pooled_gradient is None:
+            raise RuntimeError('Global loss has no gradient to pooled slots')
+
+        gradient_pairs = [
+            (gradient, weight)
+            for gradient, weight in zip(gradients, model.trainable_weights)
+            if gradient is not None
+        ]
+        if len(gradient_pairs) != len(model.trainable_weights):
+            missing = [
+                weight.name
+                for gradient, weight in zip(gradients, model.trainable_weights)
+                if gradient is None
+            ]
+            raise RuntimeError('Missing trainable gradients: %s' % missing)
+        model.optimizer.apply_gradients(gradient_pairs)
+        if self.ema_vars is not None:
+            for ema_v, weight in zip(self.ema_vars, model.trainable_weights):
+                ema_v.assign(
+                    self.ema_decay * ema_v +
+                    (1.0 - self.ema_decay) * weight)
+        grad_norm = model.accumulate_saliency(pooled_gradient)
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext,
+                model.last_new_feature_sample_rate,
+                model.last_interest_group_active_rate,
+                grad_norm)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -86,8 +137,22 @@ class Learner:
         batch_size = model_conf.batch_size
         shuffle_size = batch_size * 10
 
+        if model_conf.saliency_collect_enabled:
+            registered_slots = [int(slot) for slot in model_conf.all_slot_ids]
+            if len(registered_slots) != len(set(registered_slots)):
+                raise RuntimeError('all_slot_ids contains duplicates before training')
+            if len(registered_slots) != model_conf.saliency_expected_slot_count:
+                raise RuntimeError(
+                    'Preflight registered slot count mismatch: got %d expected %d' %
+                    (len(registered_slots),
+                     model_conf.saliency_expected_slot_count))
+            print('Saliency preflight: registered=%d remain=%d prune=%d' % (
+                len(registered_slots), model_conf.saliency_remain_count,
+                len(registered_slots) - model_conf.saliency_remain_count))
+
         #load ckpt (需要先跑一个 batch 建好变量再 restore)
         ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
+        resolved_ckpt = None
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -100,9 +165,12 @@ class Learner:
             dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
             model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
 
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            resolved_ckpt = tf.train.latest_checkpoint(ckpt_path)
+            if resolved_ckpt is None:
+                raise RuntimeError('No TensorFlow checkpoint found in %s' % ckpt_path)
+            ckpt.restore(resolved_ckpt).assert_consumed()
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
-            print("load checkpoint path: ", ckpt_path)
+            print("load checkpoint path: ", resolved_ckpt)
 
         probe_files = self.get_day_files(data_arg, days[0])
         probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
@@ -156,6 +224,12 @@ class Learner:
         mfout.close()
         print(datetime.datetime.now(), "metrics written to %s" % metric_path)
 
+        if model_conf.saliency_collect_enabled:
+            self.dump_saliency_assets(
+                start_day=start_day,
+                end_day=end_day,
+                source_checkpoint=resolved_ckpt)
+
         #导出 serving 模型。滚动评估只需要 checkpoint，可显式关闭，避免每天重复导出。
         if dump_serving_model:
             self.set_training_mode(False, True)
@@ -182,10 +256,17 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
-             pred_buy, pred_cat, pred_click, pred_ext,
-             new_feature_sample_rate,
-             interest_group_active_rate) = self.train_step(feat)
+            if model_conf.saliency_collect_enabled:
+                (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                 pred_buy, pred_cat, pred_click, pred_ext,
+                 new_feature_sample_rate,
+                 interest_group_active_rate,
+                 saliency_grad_norm) = self.train_step_with_saliency(feat)
+            else:
+                (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                 pred_buy, pred_cat, pred_click, pred_ext,
+                 new_feature_sample_rate,
+                 interest_group_active_rate) = self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -237,6 +318,86 @@ class Learner:
         #当天训练完成后直接算 auc/gauc/mae,把结果写到 metrics 文件
         if mfout is not None:
             self._write_day_metrics(day, eval_uids, eval_labels, eval_preds, mfout, train_writer)
+
+    def dump_saliency_assets(self, start_day, end_day, source_checkpoint):
+        slots = [int(slot) for slot in model_conf.all_slot_ids]
+        if len(slots) != len(set(slots)):
+            raise RuntimeError('all_slot_ids contains duplicates')
+        expected = model_conf.saliency_expected_slot_count
+        remain = model_conf.saliency_remain_count
+        if len(slots) != expected:
+            raise RuntimeError(
+                'Registered slot count mismatch: got %d expected %d' %
+                (len(slots), expected))
+        if remain <= 0 or remain >= expected:
+            raise RuntimeError(
+                'Invalid Saliency remain count: %d for %d slots' %
+                (remain, expected))
+
+        scores = self.model.saliency_scores()
+        rows = [(slot, float(scores[index]))
+                for index, slot in enumerate(slots)]
+        ascending = sorted(rows, key=lambda item: (item[1], item[0]))
+        pruned_rows = ascending[:expected - remain]
+        # Derive both sides from one total ordering. This keeps the partition
+        # deterministic and disjoint even when many slots have identical scores.
+        top_rows = sorted(
+            ascending[expected - remain:],
+            key=lambda item: (-item[1], item[0]))
+        top_slots = {slot for slot, _ in top_rows}
+        pruned_slots = {slot for slot, _ in pruned_rows}
+        if len(top_slots) != remain or len(pruned_slots) != expected - remain:
+            raise RuntimeError('Top-K Saliency partition has duplicate slots')
+        if top_slots & pruned_slots or top_slots | pruned_slots != set(slots):
+            raise RuntimeError('Top-K Saliency partition does not cover all slots')
+
+        if not os.path.isdir('log'):
+            os.makedirs('log')
+        importance_path = (
+            'log/fea_importance_saliency_%s_%s.tsv' %
+            (start_day, end_day))
+        top_path = 'log/saliency_top%d_slots.txt' % remain
+        pruned_path = 'log/saliency_pruned%d_slots.txt' % (expected - remain)
+        audit_path = 'log/saliency_slot_audit.json'
+
+        with open(importance_path, 'w') as output:
+            output.write('# slot_id\tavg_saliency_grad_norm\n')
+            for slot, score in ascending:
+                output.write('%d\t%.12g\n' % (slot, score))
+        with open(top_path, 'w') as output:
+            for slot, _ in top_rows:
+                output.write('%d\n' % slot)
+        with open(pruned_path, 'w') as output:
+            for slot, _ in pruned_rows:
+                output.write('%d\n' % slot)
+
+        interest_slots = set(range(1550, 2054))
+        stat_slots = set(range(2054, 2062))
+        audit = {
+            'source_checkpoint': source_checkpoint,
+            'collection_start_day': start_day,
+            'collection_end_day': end_day,
+            'loss': 'buy_bce+cat_bce+click_bce+ext_bce',
+            'normalization': 'mean_over_batch_then_mean_over_all_batches',
+            'gradient_steps': int(self.model._saliency_cnt),
+            'registered_slot_count': len(slots),
+            'unique_slot_count': len(set(slots)),
+            'remain_count': remain,
+            'pruned_count': expected - remain,
+            'interest_total': len(interest_slots & set(slots)),
+            'interest_remain': len(interest_slots & top_slots),
+            'interest_pruned': len(interest_slots & pruned_slots),
+            'interest_stat_total': len(stat_slots & set(slots)),
+            'interest_stat_remain': len(stat_slots & top_slots),
+            'interest_stat_pruned': len(stat_slots & pruned_slots),
+            'importance_file': importance_path,
+            'top_slots_file': top_path,
+            'pruned_slots_file': pruned_path,
+        }
+        with open(audit_path, 'w') as output:
+            json.dump(audit, output, indent=2, sort_keys=True)
+            output.write('\n')
+        print('Saliency assets written:', json.dumps(audit, sort_keys=True))
 
     def _write_day_metrics(self, day, uids, labels_by_task, preds_by_task, mfout, train_writer=None):
         """用当天内存里的采样子集算 auc/gauc/mae,结果写入 metrics 文件(+TensorBoard)。"""
