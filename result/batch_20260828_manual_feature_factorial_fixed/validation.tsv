@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct
+BR_train_prod_baseline_old_source_window_control	yes	yes	yes	yes
+BR_train_prod_ema_old_source_window_control	yes	yes	yes	yes
+BR_train_prod_ema_new_feature_window_control	yes	yes	yes	yes
+BR_train_prod_ema_interest_feature_fusion	yes	yes	yes	yes
