@@ -1,0 +1,100 @@
+{
+  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "baseline_validation": {
+    "artifacts": {
+      "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608201954",
+      "inference_benchmark_config": {
+        "batch_size": 1024,
+        "device": "/device:GPU:0",
+        "measure_batches": 100,
+        "samples": 102400,
+        "warmup_batches": 20
+      },
+      "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv"
+    },
+    "checks": {
+      "checkpoints": true,
+      "fixed_log_parseable": true,
+      "inference_benchmark_complete": true,
+      "last_test_day_correct": true,
+      "rolling_logs_complete": true,
+      "rolling_summary_complete": true
+    },
+    "errors": [],
+    "ok": true
+  },
+  "batch_id": "temp/batch_20260828_new_input_vs_ema",
+  "generated_at": "2026-08-28T12:36:06+08:00",
+  "inference_benchmark_config_mismatch": [],
+  "members": [
+    {
+      "adopted": false,
+      "attempt": 2,
+      "baseline": "BR_train_prod_bs_lr_ema_weights",
+      "branch": "tf_train_base_new_input_bs_lr_ema_weights",
+      "commit": "0d182b8c2d07ebb6f510f68b59c2dcb73bd2183d",
+      "config": {
+        "auto_test_end_day": "20260801",
+        "auto_test_start_ckpt_day": "20260724",
+        "baseline": "BR_train_prod_bs_lr_ema_weights",
+        "branch": "tf_train_base_new_input_bs_lr_ema_weights",
+        "enabled": true,
+        "require_inference_benchmark": true,
+        "test_end_day": "20260724",
+        "test_start_day": "20260721",
+        "train_end_day": "20260720",
+        "train_start_day": "20260303"
+      },
+      "created_at": "2026-08-25T15:20:19+08:00",
+      "experiment_dir": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/tf_train_base_new_input_bs_lr_ema_weights",
+      "failure_reason": null,
+      "finished_at": null,
+      "job_uuid": null,
+      "launcher_pid": 1367573,
+      "processes": [],
+      "require_inference_benchmark": true,
+      "retry_history": [
+        {
+          "launcher_pid": 1367573,
+          "log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/tf_train_base_new_input_bs_lr_ema_weights/nohup_submit_automation_retry_2.log",
+          "new_attempt": 2,
+          "new_commit": "0d182b8c2d07ebb6f510f68b59c2dcb73bd2183d",
+          "previous_attempt": 1,
+          "previous_commit": "449ec270501b282e532f62787de8f0beda619e83",
+          "previous_status": "failed",
+          "reason": "manual end-to-end revival after pulling latest branch code",
+          "retry_id": "ce89e25e-1c86-4733-8a6e-21e91a6bb9a2",
+          "time": "2026-08-25T16:33:10+08:00"
+        }
+      ],
+      "run_id": "tf_train_base_new_input_bs_lr_ema_weights@449ec270501b@attempt_1",
+      "schema_version": 1,
+      "started_at": "2026-08-25T16:33:10+08:00",
+      "status": "done",
+      "updated_at": "2026-08-28T05:20:08+08:00",
+      "validation": {
+        "artifacts": {
+          "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/tf_train_base_new_input_bs_lr_ema_weights/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608271855",
+          "inference_benchmark_config": {
+            "batch_size": 1024,
+            "device": "/device:GPU:0",
+            "measure_batches": 100,
+            "samples": 102400,
+            "warmup_batches": 20
+          },
+          "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/tf_train_base_new_input_bs_lr_ema_weights/model/rolling_metrics.tsv"
+        },
+        "checks": {
+          "checkpoints": true,
+          "fixed_log_parseable": true,
+          "inference_benchmark_complete": true,
+          "last_test_day_correct": true,
+          "rolling_logs_complete": true,
+          "rolling_summary_complete": true
+        },
+        "errors": [],
+        "ok": true
+      }
+    }
+  ]
+}

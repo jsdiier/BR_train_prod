@@ -1,0 +1,2 @@
+run_id	branch	commit	status	failure_reason
+tf_train_base_new_input_bs_lr_ema_weights@449ec270501b@attempt_1	tf_train_base_new_input_bs_lr_ema_weights	0d182b8c2d07ebb6f510f68b59c2dcb73bd2183d	done	

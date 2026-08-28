@@ -1,0 +1,3 @@
+[INFO] BR_train_prod_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] tf_train_base_new_input_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/tf_train_base_new_input_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/temp/batch_20260828_new_input_vs_ema/rolling_auc.html
