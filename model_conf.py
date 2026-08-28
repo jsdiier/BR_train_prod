@@ -59,9 +59,6 @@ padding_size = 2000
 ckpt_save_days = 10
 #评估时按 uid 采样的比例(0.01 = 1%)
 eval_uid_ratio = 0.2
-# 离线推理性能测试：先预热，再统计固定数量的完整batch。
-inference_benchmark_warmup_batches = 20
-inference_benchmark_measure_batches = 100
 #每条样本的 add_infos 字段个数
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标

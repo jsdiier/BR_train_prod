@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+log/*
+!log/.gitkeep
+
+model/*
+!model/.gitkeep
+
+serving_model_0/*
+!serving_model_0/.gitkeep
+
+run_daily.log
+my_job.lock*
+nohup*.log
