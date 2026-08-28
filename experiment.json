@@ -1,11 +1,14 @@
 {
   "enabled": true,
-  "baseline": "BR_train_prod_baseline",
+  "baseline": "BR_train_prod_tf_train_base_new_input_zyd_rolling",
+  "batch_group": "zyd_sampled_ema_attribution_20260828",
   "train_start_day": "20260303",
   "train_end_day": "20260720",
   "test_start_day": "20260721",
   "test_end_day": "20260724",
   "auto_test_start_ckpt_day": "20260724",
   "auto_test_end_day": "20260801",
+  "allowed_missing_train_days": ["20260728"],
+  "allowed_missing_test_days": ["20260728"],
   "require_inference_benchmark": true
 }

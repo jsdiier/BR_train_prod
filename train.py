@@ -160,9 +160,8 @@ class Learner:
             raise RuntimeError("training range contains no readable sampled batches")
         if last_trained_day != end_day:
             print(datetime.datetime.now(),
-                  "target day %s is absent; save state trained through %s "
-                  "under target checkpoint day" % (end_day, last_trained_day))
-            self.save_checkpoint(end_day)
+                  "target day %s was not trained; latest real checkpoint day is %s" %
+                  (end_day, last_trained_day))
 
         mfout.close()
         print(datetime.datetime.now(), "metrics written to %s" % metric_path)
