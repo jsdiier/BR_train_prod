@@ -19,14 +19,15 @@ checkpoint_ready() {
 data_day_ready() {
     local data_root=$1
     local day=$2
-    $hadoop fs -ls "${data_root%/}/${day}/part*" >/dev/null 2>&1
+    $hadoop fs -test -e "${data_root%/}/${day}/_SUCCESS" && \
+        $hadoop fs -ls "${data_root%/}/${day}/part*" >/dev/null 2>&1
 }
 
 assert_data_day() {
     local data_root=$1
     local day=$2
     if ! data_day_ready "$data_root" "$day"; then
-        echo "data day has no part files: ${data_root%/}/${day}/part*"
+        echo "data day is incomplete (_SUCCESS and part files required): ${data_root%/}/${day}"
         exit 1
     fi
 }
