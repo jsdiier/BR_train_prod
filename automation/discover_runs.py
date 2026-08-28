@@ -15,6 +15,7 @@ FIXED_REQUIRED = (
     "baseline", "train_start_day", "train_end_day", "test_start_day", "test_end_day",
 )
 ROLLING_REQUIRED = ("auto_test_start_ckpt_day", "auto_test_end_day")
+OPTIONAL_DAY_LISTS = ("allowed_missing_train_days", "allowed_missing_test_days")
 
 
 def sync_remote_heads(repo_url, tools_dir):
@@ -64,6 +65,28 @@ def validate_config(branch, value):
     for key in required[1:]:
         if not re.fullmatch(r"\d{8}", str(value[key])):
             raise ValueError("%s must be YYYYMMDD" % key)
+    for key in OPTIONAL_DAY_LISTS:
+        days_value = value.get(key, [])
+        if not isinstance(days_value, list):
+            raise ValueError("%s must be a list of YYYYMMDD values" % key)
+        invalid = [day for day in days_value
+                   if not re.fullmatch(r"\d{8}", str(day))]
+        if invalid:
+            raise ValueError("%s contains invalid YYYYMMDD values: %s" %
+                             (key, ",".join(map(str, invalid))))
+        if len(set(days_value)) != len(days_value):
+            raise ValueError("%s must not contain duplicate days" % key)
+        if days_value and not rolling_enabled:
+            raise ValueError("%s requires rolling_enabled=true" % key)
+        if days_value:
+            first_rolling_day = value["auto_test_start_ckpt_day"]
+            rolling_end = value["auto_test_end_day"]
+            out_of_range = [day for day in days_value
+                            if day <= first_rolling_day or day > rolling_end]
+            if out_of_range:
+                raise ValueError("%s days must be in (%s, %s]: %s" %
+                                 (key, first_rolling_day, rolling_end,
+                                  ",".join(map(str, out_of_range))))
     resolved = dict(value)
     resolved["branch"] = branch
     resolved["rolling_enabled"] = rolling_enabled

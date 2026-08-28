@@ -7,7 +7,7 @@ import os
 import re
 import sys
 
-from common import dates, next_day, previous_day
+from common import dates, next_day
 
 
 TASKS = {"buy", "cat", "click", "ext"}
@@ -70,18 +70,41 @@ def parse_log(path):
     return rows, perf_complete, perf_config
 
 
+def configured_days(config, key):
+    value = config.get(key, [])
+    return set(value if isinstance(value, list) else [])
+
+
+def rolling_expectations(seed, rolling_end, missing_train_days,
+                         missing_test_days):
+    """Return real checkpoints and test->latest-prior-checkpoint relationships."""
+    required_ckpts = [seed]
+    expected_logs = []
+    latest_ckpt = seed
+    for test_day in dates(next_day(seed), rolling_end):
+        if test_day not in missing_test_days:
+            expected_logs.append((latest_ckpt, test_day, test_day))
+        if test_day < rolling_end and test_day not in missing_train_days:
+            required_ckpts.append(test_day)
+            latest_ckpt = test_day
+    return required_ckpts, expected_logs
+
+
 def validate(exp_dir, config):
     result = {"ok": False, "checks": {}, "errors": [], "artifacts": {}}
     train_end = config["train_end_day"]
     rolling_enabled = config.get("rolling_enabled", True) is not False
     seed = config.get("auto_test_start_ckpt_day")
     rolling_end = config.get("auto_test_end_day")
+    missing_train_days = configured_days(config, "allowed_missing_train_days")
+    missing_test_days = configured_days(config, "allowed_missing_test_days")
 
     required_ckpts = [train_end]
+    rolling_expected = []
     if rolling_enabled:
-        required_ckpts.append(seed)
-        if next_day(seed) <= previous_day(rolling_end):
-            required_ckpts.extend(dates(next_day(seed), previous_day(rolling_end)))
+        rolling_ckpts, rolling_expected = rolling_expectations(
+            seed, rolling_end, missing_train_days, missing_test_days)
+        required_ckpts.extend(rolling_ckpts)
     required_ckpts = sorted(set(required_ckpts))
     missing_ckpts = [day for day in required_ckpts if not checkpoint_ok(exp_dir, day)]
     result["checks"]["checkpoints"] = not missing_ckpts
@@ -92,8 +115,7 @@ def validate(exp_dir, config):
     fixed_key = (train_end, config["test_start_day"], config["test_end_day"])
     expected = [fixed_key]
     if rolling_enabled:
-        for day in dates(next_day(seed), rolling_end):
-            expected.append((previous_day(day), day, day))
+        expected.extend(rolling_expected)
     missing_logs, invalid_logs = [], []
     fixed_perf, fixed_perf_config = False, None
     for key in expected:
@@ -130,8 +152,10 @@ def validate(exp_dir, config):
         except (OSError, KeyError, TypeError):
             summary_ok = False
         result["checks"]["rolling_summary_complete"] = summary_ok
-        result["checks"]["last_test_day_correct"] = any(
-            key[2] == rolling_end for key in summary_keys)
+        last_expected_test_day = rolling_expected[-1][2] if rolling_expected else None
+        result["checks"]["last_test_day_correct"] = bool(
+            last_expected_test_day and
+            any(key[2] == last_expected_test_day for key in summary_keys))
         result["artifacts"]["rolling_metrics"] = summary
         if not summary_ok:
             result["errors"].append("rolling_metrics.tsv is missing required rows")
@@ -143,6 +167,8 @@ def validate(exp_dir, config):
     require_perf = bool(config.get("require_inference_benchmark", True))
     result["checks"]["inference_benchmark_complete"] = fixed_perf or not require_perf
     result["artifacts"]["inference_benchmark_config"] = fixed_perf_config
+    result["artifacts"]["allowed_missing_train_days"] = sorted(missing_train_days)
+    result["artifacts"]["allowed_missing_test_days"] = sorted(missing_test_days)
     if require_perf and not fixed_perf:
         result["errors"].append("fixed-window inference benchmark is incomplete")
 

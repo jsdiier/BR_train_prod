@@ -49,9 +49,26 @@ crontab 和新的控制器。
   "test_end_day": "20260724",
   "auto_test_start_ckpt_day": "20260724",
   "auto_test_end_day": "20260801",
+  "allowed_missing_train_days": [],
+  "allowed_missing_test_days": [],
   "require_inference_benchmark": true
 }
 ```
+
+rolling 数据存在已确认的上游缺口时，可按实验显式声明允许缺失日期。例如：
+
+```json
+{
+  "allowed_missing_train_days": ["20260728"],
+  "allowed_missing_test_days": ["20260728"]
+}
+```
+
+验证器不会要求缺失训练日的 checkpoint，也不会要求缺失测试日的日志或 TSV 行；
+后续有效测试日必须使用该测试日之前日期最大的真实 checkpoint。例如 20260728 同时
+缺少训练和测试数据时，20260729 必须由 checkpoint 20260727 评估。缺失日不得通过
+复制旧 checkpoint 或伪造指标行补齐。允许缺失日期必须位于 rolling 区间内，且不会
+放宽 fixed-window 验证。
 
 新实验在已有 active batch 运行期间只创建 run 状态，不会混入当前批次。当前批次完成后，
 未入批的运行会由 `manage_batch.py` 冻结为下一批。
