@@ -101,12 +101,16 @@ elif ! saliency_assets_ready; then
     exit 1
 fi
 
-assert_data_range "$new_train_hdfs_dir" "$test_start_day" "$test_end_day"
-marker="log/.fixed_test_ckpt_${train_end_day}_${test_start_day}_${test_end_day}.done"
-if [[ "${fixed_test_resume:-0}" -ne 1 || ! -f "$marker" ]]; then
-    bash test.sh "$test_start_day" "$test_end_day" "$(checkpoint_dir "$train_end_day")" \
-        "fixed_test_ckpt_${train_end_day}_from_${test_start_day}_to" "$new_train_hdfs_dir"
-    touch "$marker"
+if [[ "${run_fixed_test:-0}" -eq 1 ]]; then
+    assert_data_range "$new_train_hdfs_dir" "$test_start_day" "$test_end_day"
+    marker="log/.fixed_test_ckpt_${train_end_day}_${test_start_day}_${test_end_day}.done"
+    if [[ "${fixed_test_resume:-0}" -ne 1 || ! -f "$marker" ]]; then
+        bash test.sh "$test_start_day" "$test_end_day" "$(checkpoint_dir "$train_end_day")" \
+            "fixed_test_ckpt_${train_end_day}_from_${test_start_day}_to" "$new_train_hdfs_dir"
+        touch "$marker"
+    fi
+    echo "Saliency full-slot control completed: checkpoint=${train_end_day}, test=[${test_start_day},${test_end_day}], remain=${saliency_remain_count}"
+else
+    echo "Saliency collection completed: checkpoint=${train_end_day}, remain=${saliency_remain_count}"
+    echo "Fixed test is deferred. Run bash run_fixed_test.sh after data [${test_start_day},${test_end_day}] is ready."
 fi
-
-echo "Saliency full-slot control completed: checkpoint=${train_end_day}, test=[${test_start_day},${test_end_day}], remain=${saliency_remain_count}"

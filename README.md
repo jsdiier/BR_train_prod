@@ -9,7 +9,13 @@ Manual-only stage-one run for global slot Saliency collection.
 - Registered slots: 2056; derived Top-K: 1700; derived prune set: 356
 - No rolling evaluation and no serving export
 
-Run with `bash submit_luban.sh`. The Luban entrypoint is `fixed_test.sh`.
+Run stage one with `bash submit_luban.sh`. The Luban entrypoint trains only
+`20260821..20260825`, writes checkpoint `20260825`, and emits the Saliency
+assets. Fixed evaluation is deliberately decoupled from that submission.
+
+After every configured test day `20260826..20260828` is ready, run
+`bash run_fixed_test.sh` manually. It reuses the completed checkpoint and
+Saliency assets and does not retrain.
 
 ## Legacy framework notes
 
