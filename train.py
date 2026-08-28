@@ -15,6 +15,8 @@ from sklearn import metrics
 class Learner:
     def __init__(self):
         self.model = None
+        self.ema_vars = []
+        self.ema_decay = model_conf.ema_decay
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -35,7 +37,35 @@ class Learner:
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
+        for ema_var, weight in zip(self.ema_vars, model.trainable_weights):
+            ema_var.assign(
+                self.ema_decay * ema_var + (1.0 - self.ema_decay) * weight)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+
+    def create_ema_vars(self):
+        self.ema_vars = [
+            tf.Variable(weight.read_value(), trainable=False,
+                        name="ema_shadow_%05d" % index)
+            for index, weight in enumerate(self.model.trainable_weights)
+        ]
+        print("EMA initialized: decay=%.6f shadows=%d" %
+              (self.ema_decay, len(self.ema_vars)))
+
+    def training_checkpoint(self):
+        values = {"model": self.model, "optimizer": self.model.optimizer}
+        for index, ema_var in enumerate(self.ema_vars):
+            values["ema_%05d" % index] = ema_var
+        return tf.train.Checkpoint(**values)
+
+    def swap_to_ema(self):
+        raw_values = [weight.read_value() for weight in self.model.trainable_weights]
+        for ema_var, weight in zip(self.ema_vars, self.model.trainable_weights):
+            weight.assign(ema_var)
+        return raw_values
+
+    def restore_raw_weights(self, raw_values):
+        for raw_value, weight in zip(raw_values, self.model.trainable_weights):
+            weight.assign(raw_value)
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -88,23 +118,34 @@ class Learner:
         batch_size = model_conf.batch_size
         shuffle_size = batch_size * 10
 
-        #load ckpt (需要先跑一个 batch 建好变量再 restore)
+        # Build variables from the first real partition before creating EMA
+        # shadows or restoring a continuation checkpoint.
+        probe_files = self.get_first_available_files(data_arg, days)
+        probe_ds = ut.ReadTFRecordV2(
+            probe_files, shuffle_size=1, batch_size=batch_size,
+            fetch_size=1, num_parallel=10)
+        first_batch = next(iter(probe_ds))
+        _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
+
+        # Load raw training parameters + optimizer + EMA shadows from the
+        # dedicated train_state checkpoint. The root checkpoint remains an
+        # EMA inference checkpoint consumed by test.py.
         ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
-            ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-
-            probe_files = self.get_first_available_files(data_arg, days)
-            probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size, fetch_size=1, num_parallel=10)
-            first_batch = next(iter(probe_ds))
-            _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-
             dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
             model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
-
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            self.create_ema_vars()
+            train_state_dir = os.path.join(ckpt_path, "train_state")
+            train_state_path = tf.train.latest_checkpoint(train_state_dir)
+            if not train_state_path:
+                raise RuntimeError("EMA train_state checkpoint is missing: %s" %
+                                   train_state_dir)
+            self.training_checkpoint().restore(train_state_path).assert_consumed()
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
-            print("load checkpoint path: ", ckpt_path)
+            print("restored EMA train state: ", train_state_path)
+        else:
+            self.create_ema_vars()
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
@@ -281,9 +322,21 @@ class Learner:
     def save_checkpoint(self, day):
         model = self.model
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
+        train_state_dir = os.path.join(save_dir, "train_state")
+        os.makedirs(train_state_dir, exist_ok=True)
+
+        # Preserve the exact continuation state before producing the EMA-only
+        # inference checkpoint used by fixed/rolling test.py.
+        self.training_checkpoint().save(os.path.join(train_state_dir, "state"))
+
         export_dir = save_dir + "tfmodel"
-        ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-        ckpt.save(export_dir)
+        raw_values = self.swap_to_ema()
+        try:
+            inference_ckpt = tf.train.Checkpoint(
+                model=model, optimizer=model.optimizer)
+            inference_ckpt.save(export_dir)
+        finally:
+            self.restore_raw_weights(raw_values)
 
         done_dir = os.path.dirname(model_conf.done_file_path)
         if done_dir and not os.path.exists(done_dir):
@@ -296,49 +349,54 @@ class Learner:
                 f.write(day + "\t" + save_dir + "\n")
         except Exception as e:
             print("Warning: Failed to write done file %s:" % model_conf.done_file_path, e)
-        print(datetime.datetime.now(), "saved checkpoint for day %s -> %s" % (day, save_dir))
+        print(datetime.datetime.now(),
+              "saved EMA inference checkpoint and raw train state for day %s -> %s" %
+              (day, save_dir))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
             return
 
         train_model = self.model
+        raw_values = self.swap_to_ema()
 
-        fid_keys, fid_values = train_model.fid_table.export()
-        fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
+        try:
+            fid_keys, fid_values = train_model.fid_table.export()
+            fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
 
-        fid_keys = tf.reshape(fid_keys, [-1])
-        fid_values = tf.reshape(fid_values, [-1])
+            fid_keys = tf.reshape(fid_keys, [-1])
+            fid_values = tf.reshape(fid_values, [-1])
 
-        fid_keys_ads = tf.reshape(fid_keys_ads, [-1])
-        fid_values_ads = tf.reshape(fid_values_ads, [-1])
+            fid_keys_ads = tf.reshape(fid_keys_ads, [-1])
+            fid_values_ads = tf.reshape(fid_values_ads, [-1])
 
-        serve_model = Model(
-            training=False,
-            pred=True,
-            fid_kv=(fid_keys, fid_values),
-            fid_ads_kv=(fid_keys_ads, fid_values_ads)
-        )
-        serve_model.compile(optimizer=self.model.optimizer, loss=self.model.loss_bc, metrics=['mae'])
+            serve_model = Model(
+                training=False,
+                pred=True,
+                fid_kv=(fid_keys, fid_values),
+                fid_ads_kv=(fid_keys_ads, fid_values_ads)
+            )
+            serve_model.compile(optimizer=self.model.optimizer, loss=self.model.loss_bc, metrics=['mae'])
 
-        serve_model.training = False
-        serve_model.is_save_model = True
-        dummy_sids = tf.constant([[0] * model_conf.padding_size], tf.uint32)
-        dummy_fids = tf.constant([[0] * model_conf.padding_size], tf.uint64)
-        _ = serve_model([dummy_sids, dummy_fids])
+            serve_model.training = False
+            serve_model.is_save_model = True
+            dummy_sids = tf.constant([[0] * model_conf.padding_size], tf.uint32)
+            dummy_fids = tf.constant([[0] * model_conf.padding_size], tf.uint64)
+            _ = serve_model([dummy_sids, dummy_fids])
 
-        serve_model._set_inputs([
-            tf.keras.Input(shape=(model_conf.padding_size,), dtype=tf.dtypes.uint32),
-            tf.keras.Input(shape=(model_conf.padding_size,), dtype=tf.dtypes.uint64),
-        ])
+            serve_model._set_inputs([
+                tf.keras.Input(shape=(model_conf.padding_size,), dtype=tf.dtypes.uint32),
+                tf.keras.Input(shape=(model_conf.padding_size,), dtype=tf.dtypes.uint64),
+            ])
 
-        #serve_model.load_weights(model_conf.model_path)
-        serve_model.set_weights(train_model.get_weights())
+            serve_model.set_weights(train_model.get_weights())
 
-        serve_model.save(
-            'serving_model_%s/%s00' % (epo, end_day),
-            save_format='tf'
-        )
+            serve_model.save(
+                'serving_model_%s/%s00' % (epo, end_day),
+                save_format='tf'
+            )
+        finally:
+            self.restore_raw_weights(raw_values)
 
     def count_parameters(self, verbose=False):
         total_params = 0

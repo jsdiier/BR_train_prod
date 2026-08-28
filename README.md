@@ -1,10 +1,10 @@
 # luban
 
-## Experiment: ZYD negative-sampled rolling control
+## Experiment: ZYD sampled LR + BS + EMA rolling sibling
 
-This branch keeps the `BR_train_prod_baseline` model, optimizer, loss, slots,
-batch size (`512`), and learning rate (`0.001`) unchanged. Its research change
-is the upstream negative-sampled training source:
+This branch keeps the control model, loss, slots, data and rolling calendar
+unchanged, while applying the bundled training recipe: batch size `1024`,
+learning rate `0.0003`, and EMA decay `0.999`.
 
 `hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/shulan/BR/nearby/data/`
 
@@ -18,9 +18,11 @@ AUC. `20260728` is declared missing for both train and test: it creates neither
 a checkpoint nor a metric row, and `20260729` is evaluated by the latest real
 checkpoint (`20260727`).
 
-Training keeps the imported `batch_size=512`. Fixed/rolling evaluation and the
-inference benchmark use `evaluation_batch_size=1024` so the benchmark protocol
-matches `BR_train_prod_bs_lr_ema_weights` and batch aggregation remains valid.
+Each day stores an EMA inference checkpoint at the checkpoint root and a
+separate `train_state/` checkpoint containing raw trainable parameters,
+optimizer state, and EMA shadows. Continuation restores `train_state/`; fixed,
+rolling and serving consume EMA parameters without permanently overwriting the
+live raw training weights.
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
