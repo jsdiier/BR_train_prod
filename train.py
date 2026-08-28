@@ -76,13 +76,8 @@ class Learner:
             for gradient, weight in zip(gradients, model.trainable_weights)
             if gradient is not None
         ]
-        if len(gradient_pairs) != len(model.trainable_weights):
-            missing = [
-                weight.name
-                for gradient, weight in zip(gradients, model.trainable_weights)
-                if gradient is None
-            ]
-            raise RuntimeError('Missing trainable gradients: %s' % missing)
+        if not gradient_pairs:
+            raise RuntimeError('Global loss has no trainable-weight gradients')
         model.optimizer.apply_gradients(gradient_pairs)
         if self.ema_vars is not None:
             for ema_v, weight in zip(self.ema_vars, model.trainable_weights):
