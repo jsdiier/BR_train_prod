@@ -136,3 +136,12 @@ tracer = tracing.init()
 
 - TensorFlow 2.x
 - 平台 `dmlite`（`dmlite.train.tensorflow`、`dmlite.tracing`）
+# Cross-source test-only experiment
+
+This branch does not train or write checkpoints. It reuses
+`BR_train_prod_ema_old_source_window_control/model/checkpoints/20260820/` and
+evaluates the same model on both jiazhuo and chenpinyuan-fixed TFRecords for
+`20260821-20260823`.
+
+Run manually with `bash submit_luban.sh`. Automatic experiment discovery is
+disabled in `experiment.json`.
