@@ -1,19 +1,23 @@
 {
   "enabled": false,
   "manual_only": true,
+  "common_checkpoint_continuation": true,
+  "cross_source_test": true,
   "rolling_enabled": false,
-  "batch_group": "manual_feature_factorial_tfrecord_fixed_20260829",
-  "baseline": "BR_train_prod_baseline_old_source_window_control",
-  "train_start_day": "20260303",
+  "batch_group": "manual_common0814_source_attribution_20260830",
+  "baseline": "BR_train_prod_ema_common0814_jiazhuo_continuation",
+  "train_start_day": "20260815",
   "train_end_day": "20260820",
   "test_start_day": "20260821",
   "test_end_day": "20260823",
   "auto_test_start_ckpt_day": "20260820",
   "auto_test_end_day": "20260820",
   "require_inference_benchmark": true,
-  "data_readiness_gate": {
-    "hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train/",
-    "required_start_day": "20260815",
-    "required_end_day": "20260823"
+  "source_checkpoint_branch": "BR_train_prod_ema_new_feature_window_control_tfrecord_fixed",
+  "source_checkpoint_day": "20260814",
+  "continuation_train_hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train/",
+  "test_hdfs_roots": {
+    "jiazhuo": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new/train/",
+    "chenpinyuan_fixed": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train/"
   }
 }

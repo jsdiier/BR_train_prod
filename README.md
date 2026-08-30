@@ -136,3 +136,12 @@ tracer = tracing.init()
 
 - TensorFlow 2.x
 - 平台 `dmlite`（`dmlite.train.tensorflow`、`dmlite.tracing`）
+# Common-20260814 checkpoint continuation: chenpinyuan fixed
+
+This manual-only experiment restores the exact `20260814` checkpoint produced
+by `BR_train_prod_ema_new_feature_window_control_tfrecord_fixed`, continues
+training on chenpinyuan-fixed TFRecords for `20260815-20260820`, then evaluates
+the local `20260820` checkpoint on both jiazhuo and chenpinyuan-fixed TFRecords
+for `20260821-20260823`.
+
+Automatic discovery is disabled in `experiment.json`.
