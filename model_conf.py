@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os as _os
 #model congifuration
 train_mode = 'train'
 gpu_id = '0,'
@@ -69,6 +70,76 @@ all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+sea
 #第二套emb
 slot_id_v2 = [7,8,9,10,46,49,50,51,52,53,54,55,56,57,59,60,61,62,63,64,67,68,83,84,86,87,94,98,102,159,160,161,163,164,181,182,183,184,186,187,188,189,190,191,192,762,763,764,32901,32902,32903,32904,32905,32906,32907,32908,32909,32910,32911,32912,32913,32914,32915,32916,32917,32918,32919,32920,32921,32922,32923,32924,32925]
 ads_fea_slots = [7,8,9,10,46,49,50,51,52,53,54,55,56,57,59,60,61,62,63,64,67,68,83,84,86,87,94,98,102,159,160,161,163,164,181,182,183,184,186,187,188,189,190,191,192,762,763,764]
+
+# Freeze the Saliency result produced from the matched fixed-TFRecord
+# collector.  Pruning is applied consistently to every semantic and
+# structural view of the registered slots; otherwise a removed slot could
+# still be looked up through a user/shop/sequence list.
+saliency_top1700_file = _os.path.join(
+    _os.path.dirname(_os.path.abspath(__file__)),
+    'log', 'saliency_top1700_slots.txt')
+with open(saliency_top1700_file) as _top_file:
+    saliency_top1700_slots = [
+        int(_line.strip()) for _line in _top_file if _line.strip()
+    ]
+saliency_top1700_set = set(saliency_top1700_slots)
+_full_registered_slot_ids = list(all_slot_ids)
+_full_registered_slot_set = set(_full_registered_slot_ids)
+assert len(_full_registered_slot_ids) == 2056
+assert len(_full_registered_slot_set) == 2056
+assert len(saliency_top1700_slots) == 1700
+assert len(saliency_top1700_set) == 1700
+assert saliency_top1700_set.issubset(_full_registered_slot_set)
+
+def _keep_top1700(_slots):
+    return [_slot for _slot in _slots if _slot in saliency_top1700_set]
+
+sparse_slot_ids = _keep_top1700(sparse_slot_ids)
+lr_slot_ids = _keep_top1700(lr_slot_ids)
+user_fea_list = _keep_top1700(user_fea_list)
+shop_fea_list = _keep_top1700(shop_fea_list)
+interact_fea_list = _keep_top1700(interact_fea_list)
+global_seq_query_sids = _keep_top1700(global_seq_query_sids)
+user_click_seq = _keep_top1700(user_click_seq)
+user_pay_seq = _keep_top1700(user_pay_seq)
+u_12h_click_cateIds = _keep_top1700(u_12h_click_cateIds)
+search_long_pay_seq = _keep_top1700(search_long_pay_seq)
+search_long_pay_catel3_seq = _keep_top1700(search_long_pay_catel3_seq)
+search_long_clk_seq = _keep_top1700(search_long_clk_seq)
+search_long_clk_catel3_seq = _keep_top1700(search_long_clk_catel3_seq)
+search_long_query_catel3_seq = _keep_top1700(search_long_query_catel3_seq)
+slot_id_v2 = _keep_top1700(slot_id_v2)
+ads_fea_slots = _keep_top1700(ads_fea_slots)
+interest_slot_ids = _keep_top1700(interest_slot_ids)
+interest_stat_slot_ids = _keep_top1700(interest_stat_slot_ids)
+new_feature_slot_ids = interest_slot_ids + interest_stat_slot_ids
+interest_slot_groups = [
+    _keep_top1700(_group) for _group in interest_slot_groups
+]
+seq_slot_dict = {
+    'user_click_seq': user_click_seq,
+    'user_pay_seq': user_pay_seq,
+    'user_12h_click_cateid': u_12h_click_cateIds,
+}
+# Entire sequence families are allowed to be removed by the global ranking.
+# Excluding empty families prevents construction of zero-length attention.
+seq_slot_dict = {
+    _name: _slots for _name, _slots in seq_slot_dict.items() if _slots
+}
+all_slot_ids = _keep_top1700(_full_registered_slot_ids)
+
+assert len(all_slot_ids) == len(set(all_slot_ids)) == 1700
+assert set(all_slot_ids) == saliency_top1700_set
+assert global_seq_query_sids, 'global DIN query must not be empty'
+assert all(interest_slot_groups), 'interest semantic group must not be empty'
+assert len(interest_slot_ids) == 504
+assert len(interest_stat_slot_ids) == 8
+assert len(search_long_pay_seq) == len(search_long_pay_catel3_seq) > 0
+assert len(search_long_clk_seq) == len(search_long_clk_catel3_seq) > 0
+assert search_long_query_catel3_seq
+print('[saliency_top1700] registered=1700 pruned=356 '
+      'user_pay_seq=%d user_12h_click_cateid=%d' % (
+          len(user_pay_seq), len(u_12h_click_cateIds)))
 
 #load model path
 local_model_dir = 'model'

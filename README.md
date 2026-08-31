@@ -1,16 +1,22 @@
-# BR_train_prod_ema_interest_feature_tfrecord_fixed_fullslot_e2e
+# BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_e2e
 
-Manual-only full-slot end-to-end control derived from
+Manual-only Top1700 end-to-end experiment derived from
 `BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed`.
 
 - Train from scratch on jiazhuo `20260303..20260814`
 - Continue this run's own checkpoint on chenpinyuan fixed `20260815..20260825`
-- Register all 2056 slots from day one
+- Register exactly the Saliency Top1700 slots from day one
+- Ranking source: collector commit `6ccb626`, four-task global gradient over
+  chenpinyuan fixed `20260821..20260825`
+- All 504 interest slots and 8 statistics slots are retained; 356 old slots
+  are removed
+- Empty pruned sequence families are explicitly skipped by the model
 - Fixed test on chenpinyuan fixed `20260826..20260828`
-- No Saliency collection, Top1700 pruning, rolling evaluation, or serving export
+- No Saliency collection, rolling evaluation, or serving export
 
-This run is the matched full-slot control for the future Top1700 end-to-end
-experiment. Run manually with `bash submit_luban.sh`.
+The causal comparison is this run versus
+`BR_train_prod_ema_interest_feature_tfrecord_fixed_fullslot_e2e`.
+Run manually with `bash submit_luban.sh`.
 
 ## Legacy framework notes
 

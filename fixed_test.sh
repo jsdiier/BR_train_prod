@@ -68,6 +68,24 @@ run_train_range() {
 HADOOP_HDFS_HOME=/usr/local/hadoop-current
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$HADOOP_HDFS_HOME/lib/native:${JAVA_HOME:-/usr/lib/jvm/java-8-openjdk-amd64}/jre/lib/amd64/server
 
+# Fail before submitting the expensive historical training if the frozen
+# Saliency artifact and every derived model view are not exactly aligned.
+$python - <<'PY'
+import model_conf
+
+assert len(model_conf.saliency_top1700_slots) == 1700
+assert len(set(model_conf.saliency_top1700_slots)) == 1700
+assert len(model_conf.all_slot_ids) == 1700
+assert set(model_conf.all_slot_ids) == set(model_conf.saliency_top1700_slots)
+assert len(model_conf.interest_slot_ids) == 504
+assert len(model_conf.interest_stat_slot_ids) == 8
+assert not model_conf.user_pay_seq
+assert not model_conf.u_12h_click_cateIds
+assert 'user_pay_seq' not in model_conf.seq_slot_dict
+assert 'user_12h_click_cateid' not in model_conf.seq_slot_dict
+print('Top1700 preflight passed: registered=1700 interest=504 stats=8')
+PY
+
 # Slots are registered from day one, while old-source samples keep the gated
 # residual exactly zero. The run starts independently from random weights.
 assert_data_day "$old_train_hdfs_dir" "$old_train_end_day"

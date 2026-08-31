@@ -585,6 +585,11 @@ class Model(tf.keras.Model):
 
         seq_outputs = []
         for seq_name, seq_sid_ids in model_conf.seq_slot_dict.items():
+            # A global single-slot Saliency ranking may remove a complete
+            # sequence family.  model_conf drops empty families, while this
+            # guard keeps the model safe if a future artifact contains one.
+            if not seq_sid_ids:
+                continue
             seq_slot_indices = self.slot_id_table.lookup(tf.constant(seq_sid_ids, dtype=tf.dtypes.int32))
             seq_input = tf.gather(pooled_output[:, :, 1:], seq_slot_indices, axis=1)
             seq_mask = tf.gather(slot_mask, seq_slot_indices, axis=1)

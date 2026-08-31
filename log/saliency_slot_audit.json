@@ -1,0 +1,21 @@
+{
+  "collection_end_day": "20260825",
+  "collection_start_day": "20260821",
+  "gradient_steps": 5597,
+  "importance_file": "log/fea_importance_saliency_20260821_20260825.tsv",
+  "interest_pruned": 0,
+  "interest_remain": 504,
+  "interest_stat_pruned": 0,
+  "interest_stat_remain": 8,
+  "interest_stat_total": 8,
+  "interest_total": 504,
+  "loss": "buy_bce+cat_bce+click_bce+ext_bce",
+  "normalization": "mean_over_batch_then_mean_over_all_batches",
+  "pruned_count": 356,
+  "pruned_slots_file": "log/saliency_pruned356_slots.txt",
+  "registered_slot_count": 2056,
+  "remain_count": 1700,
+  "source_checkpoint": "/nfs/dataset-ofs-rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed/model/checkpoints/20260820/tfmodel-1",
+  "top_slots_file": "log/saliency_top1700_slots.txt",
+  "unique_slot_count": 2056
+}
