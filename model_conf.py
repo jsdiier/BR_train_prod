@@ -66,3 +66,9 @@ inference_benchmark_measure_batches = 100
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标
 uid_add_info_index = 5
+
+# PAL: final display rank is add_info_list[3].  Bucket 0 is a fixed zero-bias
+# anchor; the remaining 63 buckets each learn [CVR|CLICK, CAT, CLICK, EXT].
+position_add_info_index = 3
+position_bucket_count = 64
+position_probability_epsilon = 1e-6

@@ -11,12 +11,14 @@ from module.seq_attention import *
 
 
 class Model(tf.keras.Model):
-    def __init__(self, training=False, pred=False, fid_kv=None, fid_ads_kv=None, l2_reg=0.0001):
+    def __init__(self, training=False, pred=False, fid_kv=None, fid_ads_kv=None,
+                 l2_reg=0.0001, enable_position_bias=True):
         super(Model, self).__init__()
 
         self.is_save_model = False
         self.training = training
         self.pred = pred
+        self.enable_position_bias = enable_position_bias
         self.dropout_dim = []
         self.use_bn = model_conf.use_bn
 
@@ -165,6 +167,20 @@ class Model(tf.keras.Model):
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
         self.dense_concat3 = tf.keras.layers.Dense(1, activation="sigmoid",
                                                    kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+
+        # PAL position tower.  Bucket 0 is an explicit zero anchor and therefore
+        # is not represented by a trainable row.  The four columns correspond to
+        # [CVR|CLICK, CAT, CLICK, EXT]; there is deliberately no independent BUY
+        # bias because BUY must remain CLICK * CVR|CLICK during training.
+        if self.enable_position_bias:
+            self.position_bias_tail = self.add_weight(
+                name="pal_position_bias_tail",
+                shape=(model_conf.position_bucket_count - 1, 4),
+                initializer="zeros",
+                trainable=True,
+            )
+        else:
+            self.position_bias_tail = None
 
     def set_summary_writer(self, writer, histogram_freq=100):
         self.summary_writer = writer
@@ -446,8 +462,62 @@ class Model(tf.keras.Model):
 
         return weighted_sum
 
+    @staticmethod
+    def _position_bucket(rank):
+        """Map zero-based final display rank to the pre-registered 64 buckets."""
+        rank = tf.cast(tf.reshape(rank, [-1]), tf.int32)
+        return tf.where(
+            rank < 50,
+            rank,
+            tf.where(
+                rank < 100,
+                50 + tf.math.floordiv(rank - 50, 10),
+                tf.where(
+                    rank < 200,
+                    55 + tf.math.floordiv(rank - 100, 25),
+                    tf.where(
+                        rank < 300,
+                        59 + tf.math.floordiv(rank - 200, 50),
+                        tf.where(rank < 400, 61, tf.where(rank < 500, 62, 63)),
+                    ),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _add_logit_bias(probability, bias):
+        probability = tf.clip_by_value(
+            probability,
+            model_conf.position_probability_epsilon,
+            1.0 - model_conf.position_probability_epsilon,
+        )
+        logit = tf.math.log(probability) - tf.math.log1p(-probability)
+        return tf.math.sigmoid(logit + bias)
+
+    def _position_aware_predictions(
+            self, rank, cvr_relevance, cat_relevance, click_relevance, ext_relevance):
+        if self.position_bias_tail is None:
+            raise RuntimeError("position-aware prediction requested from relevance-only model")
+        bucket = self._position_bucket(rank)
+        tail_index = tf.maximum(bucket - 1, 0)
+        bias = tf.gather(self.position_bias_tail, tail_index)
+        bias *= tf.cast(tf.expand_dims(bucket > 0, 1), bias.dtype)
+
+        cvr_train = self._add_logit_bias(cvr_relevance, bias[:, 0:1])
+        cat_train = self._add_logit_bias(cat_relevance, bias[:, 1:2])
+        click_train = self._add_logit_bias(click_relevance, bias[:, 2:3])
+        ext_train = self._add_logit_bias(ext_relevance, bias[:, 3:4])
+        buy_train = tf.math.multiply(click_train, cvr_train)
+        return buy_train, cat_train, click_train, ext_train
+
     def call(self, inputs, training=None):
-        sids, fids = inputs
+        if len(inputs) == 2:
+            sids, fids = inputs
+            rank = None
+        elif len(inputs) == 3:
+            sids, fids, rank = inputs
+        else:
+            raise ValueError("Model expects [fea_ids, fea_vals] or [fea_ids, fea_vals, rank]")
         step = self.optimizer.iterations
 
         sid_list, fid_list = self.transform(sids, fids)
@@ -599,5 +669,9 @@ class Model(tf.keras.Model):
             ext_score = ext_pred
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
-        return ctcvr, cat_pred, click_pred, ext_pred
+        if rank is not None:
+            return self._position_aware_predictions(
+                rank, cvr_pred_org, cat_pred_org, click_pred, ext_pred
+            )
 
+        return ctcvr, cat_pred, click_pred, ext_pred

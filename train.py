@@ -22,11 +22,60 @@ class Learner:
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
+    @staticmethod
+    def _extract_position(feat):
+        """Fail-fast extraction of zero-based final display rank."""
+        add_info = feat['add_info_list']
+        batch_size = tf.shape(feat['cvr_label'])[0]
+        field_num = tf.cast(model_conf.add_info_field_num, tf.int32)
+        row_counts = tf.math.bincount(
+            tf.cast(add_info.indices[:, 0], tf.int32),
+            minlength=batch_size,
+            maxlength=batch_size,
+            dtype=tf.int32,
+        )
+        assertions = [
+            tf.debugging.assert_equal(
+                add_info.dense_shape[1],
+                tf.cast(model_conf.add_info_field_num, add_info.dense_shape.dtype),
+                message="PAL add_info_list width must be exactly 24",
+            ),
+            tf.debugging.assert_equal(
+                row_counts,
+                tf.fill([batch_size], field_num),
+                message="PAL every sample must contain exactly 24 add_info fields",
+            ),
+        ]
+        with tf.control_dependencies(assertions):
+            matrix = tf.reshape(
+                tf.identity(add_info.values),
+                [batch_size, model_conf.add_info_field_num],
+            )
+            rank_text = matrix[:, model_conf.position_add_info_index]
+        with tf.control_dependencies([
+            tf.debugging.assert_positive(
+                tf.strings.length(rank_text),
+                message="PAL final display rank must not be empty",
+            )
+        ]):
+            rank = tf.strings.to_number(rank_text, out_type=tf.int32)
+        with tf.control_dependencies([
+            tf.debugging.assert_greater_equal(
+                rank,
+                tf.zeros_like(rank),
+                message="PAL final display rank must be non-negative",
+            )
+        ]):
+            return tf.identity(rank)
+
     @tf.function(experimental_relax_shapes=True)
     def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
         model = self.model
         with tf.GradientTape() as tape:
-            pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
+            rank = self._extract_position(feat)
+            pred_buy, pred_cat, pred_click, pred_ext = model(
+                [feat['fea_ids'], feat['fea_vals'], rank]
+            )
 
             loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
             loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), pred_cat)
@@ -34,6 +83,8 @@ class Learner:
             loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), pred_ext)
 
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
+
+            tf.debugging.assert_all_finite(final_loss, "PAL training loss is not finite")
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
@@ -269,6 +320,7 @@ class Learner:
         if self.ema_vars is not None:
             for ema_v, w in zip(self.ema_vars, model.trainable_weights):
                 w.assign(ema_v)
+        self._write_position_bias(day)
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -286,6 +338,34 @@ class Learner:
         except Exception as e:
             print("Warning: Failed to write done file %s:" % model_conf.done_file_path, e)
         print(datetime.datetime.now(), "saved checkpoint for day %s -> %s" % (day, save_dir))
+
+    @staticmethod
+    def _position_bucket_label(bucket):
+        if bucket < 50:
+            return str(bucket)
+        if bucket < 55:
+            start = 50 + (bucket - 50) * 10
+            return "%d-%d" % (start, start + 9)
+        if bucket < 59:
+            start = 100 + (bucket - 55) * 25
+            return "%d-%d" % (start, start + 24)
+        if bucket < 61:
+            start = 200 + (bucket - 59) * 50
+            return "%d-%d" % (start, start + 49)
+        return {61: "300-399", 62: "400-499", 63: "500+"}[bucket]
+
+    def _write_position_bias(self, day):
+        tail = self.model.position_bias_tail.numpy()
+        table = np.concatenate([np.zeros((1, 4), dtype=tail.dtype), tail], axis=0)
+        path = os.path.join(model_conf.local_model_dir, "pal_position_bias_%s.tsv" % day)
+        with open(path, 'w') as output:
+            output.write("bucket\trank_range\tcvr_given_click\tcat\tclick\text\n")
+            for bucket, values in enumerate(table):
+                output.write(
+                    "%d\t%s\t%.10f\t%.10f\t%.10f\t%.10f\n"
+                    % ((bucket, self._position_bucket_label(bucket)) + tuple(values))
+                )
+        print("PAL_POSITION_BIAS_WRITTEN day=%s path=%s" % (day, path))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
@@ -309,7 +389,8 @@ class Learner:
             training=False,
             pred=True,
             fid_kv=(fid_keys, fid_values),
-            fid_ads_kv=(fid_keys_ads, fid_values_ads)
+            fid_ads_kv=(fid_keys_ads, fid_values_ads),
+            enable_position_bias=False,
         )
         serve_model.compile(optimizer=self.model.optimizer, loss=self.model.loss_bc, metrics=['mae'])
 
@@ -325,7 +406,19 @@ class Learner:
         ])
 
         #serve_model.load_weights(model_conf.model_path)
-        serve_model.set_weights(train_model.get_weights())
+        relevance_weights = [
+            variable.numpy()
+            for variable in train_model.weights
+            if variable is not train_model.position_bias_tail
+        ]
+        if len(relevance_weights) != len(serve_model.weights):
+            raise RuntimeError(
+                "Serving relevance weight mismatch: source=%d target=%d"
+                % (len(relevance_weights), len(serve_model.weights))
+            )
+        if any("pal_position_bias" in variable.name for variable in serve_model.weights):
+            raise RuntimeError("Serving model must not contain PAL position variables")
+        serve_model.set_weights(relevance_weights)
 
         serve_model.save(
             'serving_model_%s/%s00' % (epo, end_day),

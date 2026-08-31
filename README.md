@@ -1,5 +1,31 @@
 # luban
 
+## Experiment: strict-CTCVR PAL position debias
+
+This branch is evaluated against `BR_train_prod_bs_lr_ema_weights` with the
+standard fixed and rolling protocol.  During training only, it reads the
+zero-based final display rank from `add_info_list[3]` and learns 63 anchored
+position rows with four task-private biases:
+
+`[CVR|CLICK, CAT, CLICK, EXT]`.
+
+There is no independent BUY position bias.  Training keeps the baseline
+probability contract exactly:
+
+`BUY_train = CLICK_train * CVR_given_CLICK_train`.
+
+Calls with `[fea_ids, fea_vals, rank]` use the position-aware training path.
+Fixed-window tests, rolling tests, inference benchmarks, and Serving continue
+to call `[fea_ids, fea_vals]` and therefore return relevance-only predictions.
+The Serving model is constructed with `enable_position_bias=False`, so its
+artifact contains neither the position variable nor a rank input.  The Serving
+input signature is unchanged.  Each saved checkpoint also writes
+`model/pal_position_bias_<day>.tsv` for mechanism auditing.
+
+The run is automation-enabled through `rolling_test.sh`; `common.conf` is
+locked to training `20260303-20260720`, fixed testing `20260721-20260724`, and
+rolling testing through `20260801`.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。
