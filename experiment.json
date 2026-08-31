@@ -2,18 +2,18 @@
   "enabled": false,
   "manual_only": true,
   "rolling_enabled": false,
-  "batch_group": "manual_feature_factorial_tfrecord_fixed_20260829",
-  "baseline": "BR_train_prod_baseline_old_source_window_control",
-  "train_start_day": "20260303",
-  "train_end_day": "20260820",
-  "test_start_day": "20260821",
-  "test_end_day": "20260823",
-  "auto_test_start_ckpt_day": "20260820",
-  "auto_test_end_day": "20260820",
-  "require_inference_benchmark": true,
+  "batch_group": "manual_saliency_collector_20260831",
+  "baseline": "BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed",
+  "train_start_day": "20260821",
+  "train_end_day": "20260825",
+  "source_checkpoint_branch": "BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed",
+  "source_checkpoint_day": "20260820",
+  "saliency_expected_slot_count": 2056,
+  "saliency_remain_count": 1700,
+  "require_inference_benchmark": false,
   "data_readiness_gate": {
     "hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train/",
-    "required_start_day": "20260815",
-    "required_end_day": "20260823"
+    "required_start_day": "20260821",
+    "required_end_day": "20260825"
   }
 }

@@ -1,3 +1,19 @@
+# BR_train_prod_ema_interest_feature_tfrecord_fixed_saliency_collector
+
+Manual-only Saliency asset collector based on the corrected TFRecord parent.
+
+- Restore read-only parent checkpoint: `BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed/20260820`
+- Continue training and collect global four-task gradients on chenpinyuan fixed `20260821..20260825`
+- Emit this branch's natural-continuation checkpoint `20260825`
+- Emit a complete 2056-slot ranking, Top1700, bottom356, and an audit JSON
+- Do not run fixed/rolling evaluation and do not export serving in this stage
+
+Run with `bash submit_luban.sh`. A repeated submission exits successfully only
+when the complete checkpoint and asset set passes validation; partial outputs
+are rejected to prevent mixing artifacts from different attempts.
+
+## Legacy framework notes
+
 # luban
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。

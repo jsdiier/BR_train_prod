@@ -89,3 +89,11 @@ inference_benchmark_measure_batches = 100
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标
 uid_add_info_index = 5
+
+# Stage-one Saliency collection is enabled only for the training subprocess.
+# Normal inference and future fixed tests stay on the original model path.
+import os as _os
+saliency_collect_enabled = _os.environ.get('SALIENCY_COLLECT', '0') == '1'
+saliency_expected_slot_count = int(_os.environ.get(
+    'SALIENCY_EXPECTED_SLOT_COUNT', '2056'))
+saliency_remain_count = int(_os.environ.get('SALIENCY_REMAIN_COUNT', '1700'))

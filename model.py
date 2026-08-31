@@ -19,6 +19,12 @@ class Model(tf.keras.Model):
         self.pred = pred
         self.dropout_dim = []
         self.use_bn = model_conf.use_bn
+        self.saliency_collect_enabled = model_conf.saliency_collect_enabled
+        self._last_pooled_main = None
+        if self.saliency_collect_enabled:
+            self._saliency_grad_sum_main = np.zeros(
+                len(model_conf.all_slot_ids), dtype=np.float64)
+            self._saliency_cnt = 0
 
         self.lhuc_layers_cache = {}
         self.attention_layers_cache = {}
@@ -517,6 +523,35 @@ class Model(tf.keras.Model):
         self.last_interest_group_active_rate = tf.reduce_mean(group_presence)
         return residual
 
+    def accumulate_saliency(self, pooled_gradient):
+        """Accumulate per-slot global-loss sensitivity for one training batch."""
+        if not self.saliency_collect_enabled:
+            raise RuntimeError('Saliency accumulation requested while disabled')
+        if pooled_gradient is None:
+            raise RuntimeError('Saliency gradient is None')
+        grad_norm = tf.reduce_mean(
+            tf.norm(pooled_gradient, axis=-1), axis=0).numpy()
+        expected_shape = (len(model_conf.all_slot_ids),)
+        if grad_norm.shape != expected_shape:
+            raise RuntimeError(
+                'Saliency gradient shape mismatch: got %s expected %s' %
+                (grad_norm.shape, expected_shape))
+        if not np.all(np.isfinite(grad_norm)):
+            raise RuntimeError('Saliency gradient contains non-finite values')
+        self._saliency_grad_sum_main += grad_norm
+        self._saliency_cnt += 1
+        return grad_norm
+
+    def saliency_scores(self):
+        if not self.saliency_collect_enabled:
+            raise RuntimeError('Saliency collection is disabled')
+        if self._saliency_cnt <= 0:
+            raise RuntimeError('No Saliency gradients were accumulated')
+        scores = self._saliency_grad_sum_main / float(self._saliency_cnt)
+        if not np.all(np.isfinite(scores)):
+            raise RuntimeError('Averaged Saliency scores contain non-finite values')
+        return scores
+
     def call(self, inputs, training=None):
         sids, fids = inputs
         step = self.optimizer.iterations
@@ -524,6 +559,9 @@ class Model(tf.keras.Model):
         sid_list, fid_list = self.transform(sids, fids)
 
         pooled_output, slot_mask = self.process_and_pool_fused(sid_list, fid_list)
+
+        if self.saliency_collect_enabled and not self.is_save_model:
+            self._last_pooled_main = pooled_output
 
         interest_residual = self.encode_new_interest_features(pooled_output, slot_mask)
 
