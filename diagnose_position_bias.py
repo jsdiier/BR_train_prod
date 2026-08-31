@@ -270,10 +270,29 @@ def fit_probe(x, y, position=None, initial=None):
         initial,
         method="L-BFGS-B",
         jac=True,
-        options={"maxiter": 200, "ftol": 1e-11, "gtol": 1e-7},
+        options={"maxiter": 600, "ftol": 1e-9, "gtol": 1e-5, "maxls": 50},
     )
-    if not result.success:
+    gradient_max = float(np.max(np.abs(result.jac)))
+    print(
+        "PROBE_FIT success=%s status=%d iterations=%d loss=%.10f gradient_max=%.6g message=%s"
+        % (
+            result.success,
+            result.status,
+            result.nit,
+            result.fun,
+            gradient_max,
+            result.message,
+        )
+    )
+    if not np.all(np.isfinite(result.x)) or not np.isfinite(result.fun):
+        raise RuntimeError("probe fit produced non-finite result: %s" % result.message)
+    if not result.success and result.status != 1:
         raise RuntimeError("probe fit failed: %s" % result.message)
+    if not result.success:
+        print(
+            "PROBE_FIT_WARNING iteration limit reached; using the finite best solution "
+            "after %d iterations (gradient_max=%.6g)" % (result.nit, gradient_max)
+        )
     return result.x
 
 
@@ -356,28 +375,7 @@ def conditional_table(
     return sum(value * weight for value, weight in spreads) / sum(weight for _, weight in spreads)
 
 
-def main():
-    args = arguments()
-    os.makedirs(args.output_dir, exist_ok=True)
-    days = [value.strip() for value in args.days.split(",")]
-    counts = [int(value) for value in args.parts_per_day.split(",")]
-    parts = choose_parts(args.data_root, days, counts, args.seed)
-
-    print("=" * 100)
-    print("FROZEN BASELINE POSITION DIAGNOSTIC")
-    print("checkpoint=%s" % args.checkpoint)
-    for index, (day, path, size) in enumerate(parts, 1):
-        print(
-            "part=%d/%d day=%s size=%.1fMB path=%s"
-            % (index, len(parts), day, size / 1024.0 / 1024.0, path)
-        )
-    print("=" * 100)
-
-    with open(os.path.join(args.output_dir, "sampled_parts.tsv"), "w") as output:
-        output.write("day\tpath\tsize_bytes\n")
-        for day, path, size in parts:
-            output.write("%s\t%s\t%d\n" % (day, path, size))
-
+def collect_predictions(args, parts):
     cache_dir = os.path.join(args.output_dir, "cache")
     first_local_path = stage_hdfs_part(
         parts[0][1], parts[0][2], cache_dir, 1, len(parts)
@@ -429,8 +427,51 @@ def main():
                 os.remove(local_path)
         print("\npart completed %d/%d samples=%d" % (part_index, len(parts), part_total))
 
-    arrays = {key: np.concatenate(value) for key, value in arrays.items()}
-    np.savez_compressed(os.path.join(args.output_dir, "baseline_predictions.npz"), **arrays)
+    return (
+        {key: np.concatenate(value) for key, value in arrays.items()},
+        checkpoint_path,
+        total,
+    )
+
+
+def main():
+    args = arguments()
+    os.makedirs(args.output_dir, exist_ok=True)
+    days = [value.strip() for value in args.days.split(",")]
+    counts = [int(value) for value in args.parts_per_day.split(",")]
+    parts = choose_parts(args.data_root, days, counts, args.seed)
+
+    print("=" * 100)
+    print("FROZEN BASELINE POSITION DIAGNOSTIC")
+    print("checkpoint=%s" % args.checkpoint)
+    for index, (day, path, size) in enumerate(parts, 1):
+        print(
+            "part=%d/%d day=%s size=%.1fMB path=%s"
+            % (index, len(parts), day, size / 1024.0 / 1024.0, path)
+        )
+    print("=" * 100)
+
+    with open(os.path.join(args.output_dir, "sampled_parts.tsv"), "w") as output:
+        output.write("day\tpath\tsize_bytes\n")
+        for day, path, size in parts:
+            output.write("%s\t%s\t%d\n" % (day, path, size))
+
+    predictions_path = os.path.join(args.output_dir, "baseline_predictions.npz")
+    if os.path.exists(predictions_path):
+        with np.load(predictions_path, allow_pickle=False) as saved:
+            arrays = {key: saved[key] for key in saved.files}
+        checkpoint_path = tf.train.latest_checkpoint(args.checkpoint)
+        if not checkpoint_path:
+            raise RuntimeError("checkpoint missing: %s" % args.checkpoint)
+        total = int(arrays["rank"].size)
+        print(
+            "REUSE_BASELINE_PREDICTIONS path=%s samples=%d; skipping HDFS staging and inference"
+            % (predictions_path, total)
+        )
+    else:
+        arrays, checkpoint_path, total = collect_predictions(args, parts)
+        np.savez_compressed(predictions_path, **arrays)
+        print("BASELINE_PREDICTIONS_SAVED %s" % predictions_path)
     train = ~arrays["validation"]
     valid = arrays["validation"]
     print("train_samples=%d validation_samples=%d" % (np.sum(train), np.sum(valid)))
