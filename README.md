@@ -1,3 +1,19 @@
+# BR_train_prod_ema_interest_feature_tfrecord_fixed_fullslot_e2e
+
+Manual-only full-slot end-to-end control derived from
+`BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed`.
+
+- Train from scratch on jiazhuo `20260303..20260814`
+- Continue this run's own checkpoint on chenpinyuan fixed `20260815..20260825`
+- Register all 2056 slots from day one
+- Fixed test on chenpinyuan fixed `20260826..20260828`
+- No Saliency collection, Top1700 pruning, rolling evaluation, or serving export
+
+This run is the matched full-slot control for the future Top1700 end-to-end
+experiment. Run manually with `bash submit_luban.sh`.
+
+## Legacy framework notes
+
 # luban
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
