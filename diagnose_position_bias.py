@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import random
+import shutil
+import subprocess
 import sys
 import time
 
@@ -30,6 +32,7 @@ TASKS = (
 )
 POSITION_NAMES = ("1-3", "4-6", "7-10", "11-20", "21+")
 FIELD_COUNT = 24
+HADOOP = "/usr/local/hadoop-current/bin/hadoop"
 
 
 def arguments():
@@ -67,11 +70,78 @@ def choose_parts(root, days, counts, seed):
     rng = random.Random(seed)
     selected = []
     for day, count in zip(days, counts):
-        paths = sorted(tf.io.gfile.glob("%s/%s/part*" % (root.rstrip("/"), day)))
+        pattern = "%s/%s/part*" % (root.rstrip("/"), day)
+        process = subprocess.run(
+            [HADOOP, "fs", "-ls", pattern],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        if process.returncode != 0:
+            raise RuntimeError(
+                "hadoop fs -ls failed for %s:\n%s" % (pattern, process.stderr)
+            )
+        paths = []
+        for line in process.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 8 and "/part-" in fields[-1]:
+                paths.append((fields[-1], int(fields[4])))
+        paths.sort(key=lambda item: item[0])
         if len(paths) < count:
             raise RuntimeError("day=%s found=%d requested=%d" % (day, len(paths), count))
-        selected.extend((day, path) for path in sorted(rng.sample(paths, count)))
+        selected.extend((day, path, size) for path, size in sorted(rng.sample(paths, count)))
     return selected
+
+
+def stage_hdfs_part(path, size, cache_dir, part_index, part_count):
+    os.makedirs(cache_dir, exist_ok=True)
+    free_bytes = shutil.disk_usage(cache_dir).free
+    if free_bytes < size + 1024 * 1024 * 1024:
+        raise RuntimeError(
+            "insufficient local space: free=%d required_at_least=%d"
+            % (free_bytes, size + 1024 * 1024 * 1024)
+        )
+    local_path = os.path.join(cache_dir, "current_part.tfrecord.gz")
+    if os.path.exists(local_path):
+        os.remove(local_path)
+
+    process = subprocess.Popen([HADOOP, "fs", "-cat", path], stdout=subprocess.PIPE)
+    copied = 0
+    started = time.time()
+    with open(local_path, "wb") as output:
+        while True:
+            chunk = process.stdout.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+            copied += len(chunk)
+            ratio = min(copied / float(max(size, 1)), 1.0)
+            speed = copied / max(time.time() - started, 0.001) / 1024.0 / 1024.0
+            print(
+                "\rstage part=%d/%d [%s%s] %6.2f%% %.1f/%.1f MB %.1f MB/s"
+                % (
+                    part_index,
+                    part_count,
+                    "#" * int(ratio * 30),
+                    "-" * (30 - int(ratio * 30)),
+                    ratio * 100.0,
+                    copied / 1024.0 / 1024.0,
+                    size / 1024.0 / 1024.0,
+                    speed,
+                ),
+                end="",
+            )
+            sys.stdout.flush()
+    process.stdout.close()
+    return_code = process.wait()
+    print()
+    if return_code != 0:
+        if os.path.exists(local_path):
+            os.remove(local_path)
+        raise RuntimeError("hadoop fs -cat failed with return code %d: %s" % (return_code, path))
+    if copied != size:
+        raise RuntimeError("staged size mismatch: copied=%d hdfs_size=%d" % (copied, size))
+    return local_path
 
 
 def make_dataset(path, batch_size):
@@ -296,16 +366,23 @@ def main():
     print("=" * 100)
     print("FROZEN BASELINE POSITION DIAGNOSTIC")
     print("checkpoint=%s" % args.checkpoint)
-    for index, (day, path) in enumerate(parts, 1):
-        print("part=%d/%d day=%s path=%s" % (index, len(parts), day, path))
+    for index, (day, path, size) in enumerate(parts, 1):
+        print(
+            "part=%d/%d day=%s size=%.1fMB path=%s"
+            % (index, len(parts), day, size / 1024.0 / 1024.0, path)
+        )
     print("=" * 100)
 
     with open(os.path.join(args.output_dir, "sampled_parts.tsv"), "w") as output:
-        output.write("day\tpath\n")
-        for day, path in parts:
-            output.write("%s\t%s\n" % (day, path))
+        output.write("day\tpath\tsize_bytes\n")
+        for day, path, size in parts:
+            output.write("%s\t%s\t%d\n" % (day, path, size))
 
-    first_batch = next(iter(make_dataset(parts[0][1], args.batch_size)))
+    cache_dir = os.path.join(args.output_dir, "cache")
+    first_local_path = stage_hdfs_part(
+        parts[0][1], parts[0][2], cache_dir, 1, len(parts)
+    )
+    first_batch = next(iter(make_dataset(first_local_path, args.batch_size)))
     model, checkpoint_path = restore_model(args.checkpoint, first_batch)
 
     arrays = {"rank": [], "validation": [], "day": []}
@@ -315,33 +392,41 @@ def main():
 
     total = 0
     started = time.time()
-    for part_index, (day, path) in enumerate(parts, 1):
+    for part_index, (day, path, size) in enumerate(parts, 1):
+        if part_index == 1:
+            local_path = first_local_path
+        else:
+            local_path = stage_hdfs_part(path, size, cache_dir, part_index, len(parts))
         part_total = 0
-        for batch_index, feat in enumerate(make_dataset(path, args.batch_size), 1):
-            batch_size = int(feat["cvr_label"].shape[0])
-            prediction = model([feat["fea_ids"], feat["fea_vals"]])
-            rank, validation = metadata(feat, batch_size)
-            arrays["rank"].append(rank)
-            arrays["validation"].append(validation)
-            arrays["day"].append(np.full(batch_size, int(day), np.int32))
-            for task_index, (task, label_key) in enumerate(TASKS):
-                arrays[task + "_label"].append(
-                    feat[label_key].numpy().reshape(-1).astype(np.float32)
-                )
-                arrays[task + "_score"].append(
-                    prediction[task_index].numpy().reshape(-1).astype(np.float32)
-                )
-            total += batch_size
-            part_total += batch_size
-            if batch_index % 20 == 0:
-                speed = total / max(time.time() - started, 0.001)
-                print(
-                    "\rinference part=%d/%d day=%s batches=%d part_samples=%d "
-                    "total=%d speed=%.1f samples/s"
-                    % (part_index, len(parts), day, batch_index, part_total, total, speed),
-                    end="",
-                )
-                sys.stdout.flush()
+        try:
+            for batch_index, feat in enumerate(make_dataset(local_path, args.batch_size), 1):
+                batch_size = int(feat["cvr_label"].shape[0])
+                prediction = model([feat["fea_ids"], feat["fea_vals"]])
+                rank, validation = metadata(feat, batch_size)
+                arrays["rank"].append(rank)
+                arrays["validation"].append(validation)
+                arrays["day"].append(np.full(batch_size, int(day), np.int32))
+                for task_index, (task, label_key) in enumerate(TASKS):
+                    arrays[task + "_label"].append(
+                        feat[label_key].numpy().reshape(-1).astype(np.float32)
+                    )
+                    arrays[task + "_score"].append(
+                        prediction[task_index].numpy().reshape(-1).astype(np.float32)
+                    )
+                total += batch_size
+                part_total += batch_size
+                if batch_index % 20 == 0:
+                    speed = total / max(time.time() - started, 0.001)
+                    print(
+                        "\rinference part=%d/%d day=%s batches=%d part_samples=%d "
+                        "total=%d speed=%.1f samples/s"
+                        % (part_index, len(parts), day, batch_index, part_total, total, speed),
+                        end="",
+                    )
+                    sys.stdout.flush()
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
         print("\npart completed %d/%d samples=%d" % (part_index, len(parts), part_total))
 
     arrays = {key: np.concatenate(value) for key, value in arrays.items()}
