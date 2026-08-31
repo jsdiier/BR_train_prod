@@ -1,5 +1,13 @@
 # luban
 
+> 本分支为手动、只推理的 PAL 位置偏差诊断。它恢复
+> `BR_train_prod_bs_lr_ema_weights` 的 `20260826` checkpoint，在
+> `20260827～20260829` 固定抽取5个part，比较同分数不同位置标签率，以及
+> Score-only / Score+Position 的验证集 AUC 与 logloss。它不训练模型、不写
+> checkpoint、不导出 Serving，也不进入自动 batch。
+
+手动入口：`bash run_position_bias_diagnostic.sh`。
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。

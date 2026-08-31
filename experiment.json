@@ -1,11 +1,13 @@
 {
-  "enabled": true,
-  "baseline": "BR_train_prod_bs_lr",
-  "train_start_day": "20260303",
-  "train_end_day": "20260720",
-  "test_start_day": "20260721",
-  "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
-  "require_inference_benchmark": true
+  "enabled": false,
+  "manual_only": true,
+  "rolling_enabled": false,
+  "diagnostic_only": true,
+  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "source_checkpoint_branch": "BR_train_prod_bs_lr_ema_weights",
+  "source_checkpoint_day": "20260826",
+  "diagnostic_start_day": "20260827",
+  "diagnostic_end_day": "20260829",
+  "sampled_part_count": 5,
+  "require_inference_benchmark": false
 }
