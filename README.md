@@ -17,7 +17,9 @@ for prediction.  The diagnostic reports:
 It does not train, mutate either source experiment, export ServingModel, or
 participate in research automation.
 
-Run manually with `bash run_posthoc_diagnostic.sh`.
+Run manually with `bash run_posthoc_diagnostic.sh`.  The diagnostic deliberately
+uses the active environment's `python` command rather than the legacy absolute
+Python path in `common.conf`.
 
 ## Legacy framework notes
 
