@@ -1,4 +1,32 @@
-# BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_e2e
+# BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_daily
+
+Manual-only daily continuation and serving branch derived from
+`BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_e2e`.
+
+- Seed this directory once with the parent's `20260825` checkpoint and a
+  one-line `model/model.done`
+- Continue daily from the latest completed checkpoint
+- Read only chenpinyuan corrected TFRecord data:
+  `hash_fea_new_fixed/train/`
+- Keep the exact Top1700 slot registration and model structure of the parent
+- Do not run fixed-window or rolling evaluation in the daily job
+- Dump a ServingModel after every successful update and publish it to an HDFS
+  path isolated by this directory's `proj_name`
+- Keep `experiment.json` disabled/manual-only so research automation does not
+  discover or submit this operational branch
+
+The serving target is resolved dynamically as:
+
+```text
+/user/prod_soda_trade_strategy/rank/chenpinyuan/train_model_nb_br/
+  BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_daily/
+  serving_model/export_model
+```
+
+Run manually (or from this directory's crontab) with
+`bash submit_luban.sh`.
+
+## Parent E2E experiment
 
 Manual-only Top1700 end-to-end experiment derived from
 `BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed`.
