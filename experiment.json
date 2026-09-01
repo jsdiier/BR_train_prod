@@ -1,12 +1,22 @@
 {
   "enabled": false,
   "manual_only": true,
+  "rolling_enabled": false,
+  "operational_role": "posthoc_diagnostic_only",
   "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "research_parent": "BR_train_prod_ema_pal_position_debias",
   "train_start_day": "20260303",
   "train_end_day": "20260720",
   "test_start_day": "20260721",
   "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
-  "require_inference_benchmark": true
+  "auto_test_start_ckpt_day": null,
+  "auto_test_end_day": null,
+  "diagnostics": [
+    "exact_rank_auc",
+    "five_position_bucket_auc",
+    "cvr_given_click_auc",
+    "cvr_given_click_gauc",
+    "cvr_given_click_uauc"
+  ],
+  "require_inference_benchmark": false
 }

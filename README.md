@@ -1,3 +1,26 @@
+# BR_train_prod_ema_pal_position_debias_posthoc_diagnostic
+
+Manual-only, inference-only comparison of the frozen `20260720` checkpoints:
+
+- baseline: `BR_train_prod_bs_lr_ema_weights`
+- treatment: `BR_train_prod_ema_pal_position_debias`
+- data: jiazhuo `20260721..20260724`
+
+Both models receive only `[fea_ids, fea_vals]`; PAL position bias is never used
+for prediction.  The diagnostic reports:
+
+- global AUC as an alignment check;
+- pair-weighted AUC within exact final display rank;
+- pair-weighted AUC within `1-3 / 4-6 / 7-10 / 11-20 / 21+`;
+- `CVR|CLICK` AUC/GAUC/UAUC on samples with `clk_label=1`.
+
+It does not train, mutate either source experiment, export ServingModel, or
+participate in research automation.
+
+Run manually with `bash run_posthoc_diagnostic.sh`.
+
+## Legacy framework notes
+
 # luban
 
 ## Experiment: strict-CTCVR PAL position debias
