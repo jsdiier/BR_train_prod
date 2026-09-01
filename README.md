@@ -1,5 +1,12 @@
 # luban
 
+## Manual extension to the 20260825 matched window
+
+`extend_to_20260825_fixed_test.sh` restores the existing `20260731`
+checkpoint, continues the historical no-EMA baseline on the jiazhuo source
+through `20260825`, and evaluates that checkpoint on chenpinyuan fixed
+`20260826..20260828`.  It does not export Serving and is manual-only.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。
