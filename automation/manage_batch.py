@@ -31,13 +31,12 @@ def main():
         # fixed-only factorials separate from later agent-generated runs.
         candidates.sort(key=lambda state: state.get("created_at", ""))
         batch_group = candidates[0].get("batch_group", "default")
+        baseline = candidates[0]["baseline"]
         candidates = [state for state in candidates
-                      if state.get("batch_group", "default") == batch_group]
+                      if state.get("batch_group", "default") == batch_group
+                      and state["baseline"] == baseline]
         batch_id = "batch_%s" % __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         baselines = {state["baseline"] for state in candidates}
-        if len(baselines) != 1:
-            print("[BATCH] cannot mix baselines: %s" % sorted(baselines))
-            return 1
         batch = {"schema_version": 1, "batch_id": batch_id, "created_at": now(),
                  "baseline": baselines.pop(), "members": [state["run_id"] for state in candidates],
                  "batch_group": batch_group,
@@ -45,8 +44,8 @@ def main():
         batch_path = os.path.join(batches_dir, batch_id + ".json")
         atomic_json(batch_path, batch)
         atomic_json(active_path, {"batch_id": batch_id})
-        print("[BATCH] froze %d runs from group %s into %s" % (
-            len(candidates), batch_group, batch_id))
+        print("[BATCH] froze %d runs from group %s with baseline %s into %s" % (
+            len(candidates), batch_group, baseline, batch_id))
         active = {"batch_id": batch_id}
     else:
         active = load_json(active_path)
