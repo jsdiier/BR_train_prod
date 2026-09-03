@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_ema_clicked_cvr_auxiliary_supervision	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_din_masked_mean_residual	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_rankmixer_learned_token_mixing	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_semantic_domain_rankmixer_92token	yes	yes	yes	yes	yes	yes
