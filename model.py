@@ -6,6 +6,7 @@ import model_conf
 import model_conf
 from tensorflow.python.framework import sparse_tensor
 from module.rankmixer_v4 import *
+from module.selective_adamw import SelectiveAdamW
 from logger import logger
 from module.seq_attention import *
 
@@ -29,8 +30,14 @@ class Model(tf.keras.Model):
         self.loss_bc = tf.keras.losses.binary_crossentropy
         self.lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(model_conf.learning_rate, decay_steps=1000000,
                                                                           decay_rate=1, staircase=False)
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_schedule, beta_1=0.9, beta_2=0.999,
-                                                  epsilon=1e-07, amsgrad=False, name='Adam')
+        self.optimizer = SelectiveAdamW(
+            learning_rate=self.lr_schedule,
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-07,
+            amsgrad=False,
+            decoupled_weight_decay=1e-4,
+            name='SelectiveAdamW')
 
         # embedding table
         self.emb_fm = tf.keras.layers.Embedding(
@@ -600,4 +607,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-

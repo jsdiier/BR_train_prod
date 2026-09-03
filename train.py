@@ -106,6 +106,11 @@ class Learner:
                                      fetch_size=1, num_parallel=10)
         first_batch = next(iter(probe_ds))
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
+        decayed_variables, excluded_variables = model.optimizer.decay_audit(
+            model.trainable_variables)
+        print('ADAMW_DECAY_AUDIT decayed=%d excluded=%d' % (
+            len(decayed_variables), len(excluded_variables)))
+        print('ADAMW_DECAYED_VARIABLES ' + ','.join(decayed_variables))
         self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
