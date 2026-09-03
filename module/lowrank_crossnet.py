@@ -12,9 +12,21 @@ class LowRankCrossLayer(tf.keras.layers.Layer):
         self.up = None
 
     def build(self, input_shape):
-        input_dim = input_shape[-1]
+        # ``call`` receives ``[x0, x]``, so Keras passes a pair of
+        # TensorShapes here rather than one TensorShape.
+        if not isinstance(input_shape, (list, tuple)) or len(input_shape) != 2:
+            raise ValueError(
+                "LowRankCrossLayer expects [x0, x] input shapes, got %r"
+                % (input_shape,))
+        x0_shape = tf.TensorShape(input_shape[0])
+        x_shape = tf.TensorShape(input_shape[1])
+        input_dim = x_shape[-1]
         if input_dim is None:
             raise ValueError("LowRankCrossLayer requires a static input dimension")
+        if x0_shape[-1] != input_dim:
+            raise ValueError(
+                "LowRankCrossLayer requires x0 and x to have the same last "
+                "dimension, got %s and %s" % (x0_shape[-1], input_dim))
         self.up = tf.keras.layers.Dense(
             int(input_dim), use_bias=True, name="up")
         super().build(input_shape)
