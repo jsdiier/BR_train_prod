@@ -62,8 +62,10 @@ run_train_range() {
 HADOOP_HDFS_HOME=/usr/local/hadoop-current
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$HADOOP_HDFS_HOME/lib/native:${JAVA_HOME:-/usr/lib/jvm/java-8-openjdk-amd64}/jre/lib/amd64/server
 
-# All groups initialize independently with their final slot registration.
-assert_data_range "$old_train_hdfs_dir" "$train_start_day" "$old_train_end_day"
+# The legacy source has known sparse calendar gaps. train.py deliberately skips
+# days without part files, so only require the phase boundary day: it must be
+# readable in order to create the shared 20260817 checkpoint contract.
+assert_data_day "$old_train_hdfs_dir" "$old_train_end_day"
 if ! checkpoint_ready "$old_train_end_day"; then
     run_train_range "$old_train_hdfs_dir" "$train_start_day" "$old_train_end_day"
 fi
