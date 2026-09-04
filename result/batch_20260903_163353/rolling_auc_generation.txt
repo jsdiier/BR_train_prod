@@ -1,0 +1,6 @@
+[INFO] BR_train_prod_bs_lr_ema_weights: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_lowrank_dcnv2_cross_branch: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_lowrank_dcnv2_cross_branch/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_finalmlp_two_stream_fusion: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_finalmlp_two_stream_fusion/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_adamw_dense_kernel_decay: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_adamw_dense_kernel_decay/model/rolling_metrics.tsv
+[INFO] BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260903_163353/rolling_auc.html

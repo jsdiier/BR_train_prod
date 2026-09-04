@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_prod_ema_lowrank_dcnv2_cross_branch	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_finalmlp_two_stream_fusion	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_adamw_dense_kernel_decay	yes	yes	yes	yes	yes	yes
+BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer	yes	yes	yes	yes	yes	yes

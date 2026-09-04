@@ -1,0 +1,275 @@
+{
+  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "baseline_validation": {
+    "artifacts": {
+      "allowed_missing_test_days": [],
+      "allowed_missing_train_days": [],
+      "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202608201954",
+      "inference_benchmark_config": {
+        "batch_size": 1024,
+        "device": "/device:GPU:0",
+        "measure_batches": 100,
+        "samples": 102400,
+        "warmup_batches": 20
+      },
+      "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_bs_lr_ema_weights/model/rolling_metrics.tsv"
+    },
+    "checks": {
+      "checkpoints": true,
+      "fixed_log_parseable": true,
+      "inference_benchmark_complete": true,
+      "last_test_day_correct": true,
+      "rolling_logs_complete": true,
+      "rolling_summary_complete": true
+    },
+    "errors": [],
+    "ok": true
+  },
+  "batch_id": "batch_20260903_163353",
+  "generated_at": "2026-09-04T14:15:24+08:00",
+  "inference_benchmark_config_mismatch": [],
+  "members": [
+    {
+      "adopted": false,
+      "attempt": 2,
+      "baseline": "BR_train_prod_bs_lr_ema_weights",
+      "batch_group": "default",
+      "branch": "BR_train_prod_ema_lowrank_dcnv2_cross_branch",
+      "commit": "4fed1b6deac65a4e8cffe22fc8b64bb181ecd1c1",
+      "config": {
+        "auto_test_end_day": "20260801",
+        "auto_test_start_ckpt_day": "20260724",
+        "baseline": "BR_train_prod_bs_lr_ema_weights",
+        "branch": "BR_train_prod_ema_lowrank_dcnv2_cross_branch",
+        "enabled": true,
+        "require_inference_benchmark": true,
+        "rolling_enabled": true,
+        "test_end_day": "20260724",
+        "test_start_day": "20260721",
+        "train_end_day": "20260720",
+        "train_start_day": "20260303"
+      },
+      "created_at": "2026-09-03T16:30:30+08:00",
+      "experiment_dir": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_lowrank_dcnv2_cross_branch",
+      "failure_reason": null,
+      "finished_at": null,
+      "job_uuid": null,
+      "launcher_pid": 550320,
+      "processes": [],
+      "require_inference_benchmark": true,
+      "run_id": "BR_train_prod_ema_lowrank_dcnv2_cross_branch@4fed1b6deac6@attempt_2",
+      "schema_version": 1,
+      "status": "done",
+      "updated_at": "2026-09-04T08:15:18+08:00",
+      "validation": {
+        "artifacts": {
+          "allowed_missing_test_days": [],
+          "allowed_missing_train_days": [],
+          "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_lowrank_dcnv2_cross_branch/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202609040201",
+          "inference_benchmark_config": {
+            "batch_size": 1024,
+            "device": "/device:GPU:0",
+            "measure_batches": 100,
+            "samples": 102400,
+            "warmup_batches": 20
+          },
+          "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_lowrank_dcnv2_cross_branch/model/rolling_metrics.tsv"
+        },
+        "checks": {
+          "checkpoints": true,
+          "fixed_log_parseable": true,
+          "inference_benchmark_complete": true,
+          "last_test_day_correct": true,
+          "rolling_logs_complete": true,
+          "rolling_summary_complete": true
+        },
+        "errors": [],
+        "ok": true
+      }
+    },
+    {
+      "adopted": false,
+      "attempt": 1,
+      "baseline": "BR_train_prod_bs_lr_ema_weights",
+      "batch_group": "default",
+      "branch": "BR_train_prod_ema_finalmlp_two_stream_fusion",
+      "commit": "a52a4f7e513333d0f6b8a2bb4430823898802bd7",
+      "config": {
+        "auto_test_end_day": "20260801",
+        "auto_test_start_ckpt_day": "20260724",
+        "baseline": "BR_train_prod_bs_lr_ema_weights",
+        "branch": "BR_train_prod_ema_finalmlp_two_stream_fusion",
+        "enabled": true,
+        "require_inference_benchmark": true,
+        "rolling_enabled": true,
+        "test_end_day": "20260724",
+        "test_start_day": "20260721",
+        "train_end_day": "20260720",
+        "train_start_day": "20260303"
+      },
+      "created_at": "2026-09-03T14:40:10+08:00",
+      "experiment_dir": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_finalmlp_two_stream_fusion",
+      "failure_reason": null,
+      "finished_at": "2026-09-04T06:20:10+08:00",
+      "job_uuid": null,
+      "launcher_pid": 367745,
+      "processes": [
+        {
+          "cmd": "bash submit_luban.sh",
+          "pid": 367745
+        }
+      ],
+      "require_inference_benchmark": true,
+      "run_id": "BR_train_prod_ema_finalmlp_two_stream_fusion@a52a4f7e5133@attempt_1",
+      "schema_version": 1,
+      "status": "done",
+      "updated_at": "2026-09-04T06:20:10+08:00",
+      "validation": {
+        "artifacts": {
+          "allowed_missing_test_days": [],
+          "allowed_missing_train_days": [],
+          "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_finalmlp_two_stream_fusion/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202609032357",
+          "inference_benchmark_config": {
+            "batch_size": 1024,
+            "device": "/device:GPU:0",
+            "measure_batches": 100,
+            "samples": 102400,
+            "warmup_batches": 20
+          },
+          "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_finalmlp_two_stream_fusion/model/rolling_metrics.tsv"
+        },
+        "checks": {
+          "checkpoints": true,
+          "fixed_log_parseable": true,
+          "inference_benchmark_complete": true,
+          "last_test_day_correct": true,
+          "rolling_logs_complete": true,
+          "rolling_summary_complete": true
+        },
+        "errors": [],
+        "ok": true
+      }
+    },
+    {
+      "adopted": false,
+      "attempt": 1,
+      "baseline": "BR_train_prod_bs_lr_ema_weights",
+      "batch_group": "default",
+      "branch": "BR_train_prod_ema_adamw_dense_kernel_decay",
+      "commit": "1de1aac5e542be85e1cd16f37320c5b1006b5191",
+      "config": {
+        "auto_test_end_day": "20260801",
+        "auto_test_start_ckpt_day": "20260724",
+        "baseline": "BR_train_prod_bs_lr_ema_weights",
+        "branch": "BR_train_prod_ema_adamw_dense_kernel_decay",
+        "enabled": true,
+        "require_inference_benchmark": true,
+        "rolling_enabled": true,
+        "test_end_day": "20260724",
+        "test_start_day": "20260721",
+        "train_end_day": "20260720",
+        "train_start_day": "20260303"
+      },
+      "created_at": "2026-09-03T14:40:09+08:00",
+      "experiment_dir": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_adamw_dense_kernel_decay",
+      "failure_reason": null,
+      "finished_at": "2026-09-04T06:05:18+08:00",
+      "job_uuid": null,
+      "launcher_pid": 367703,
+      "processes": [
+        {
+          "cmd": "bash submit_luban.sh",
+          "pid": 367703
+        }
+      ],
+      "require_inference_benchmark": true,
+      "run_id": "BR_train_prod_ema_adamw_dense_kernel_decay@1de1aac5e542@attempt_1",
+      "schema_version": 1,
+      "status": "done",
+      "updated_at": "2026-09-04T06:05:18+08:00",
+      "validation": {
+        "artifacts": {
+          "allowed_missing_test_days": [],
+          "allowed_missing_train_days": [],
+          "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_adamw_dense_kernel_decay/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202609032357",
+          "inference_benchmark_config": {
+            "batch_size": 1024,
+            "device": "/device:GPU:0",
+            "measure_batches": 100,
+            "samples": 102400,
+            "warmup_batches": 20
+          },
+          "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_adamw_dense_kernel_decay/model/rolling_metrics.tsv"
+        },
+        "checks": {
+          "checkpoints": true,
+          "fixed_log_parseable": true,
+          "inference_benchmark_complete": true,
+          "last_test_day_correct": true,
+          "rolling_logs_complete": true,
+          "rolling_summary_complete": true
+        },
+        "errors": [],
+        "ok": true
+      }
+    },
+    {
+      "adopted": false,
+      "attempt": 1,
+      "baseline": "BR_train_prod_bs_lr_ema_weights",
+      "batch_group": "default",
+      "branch": "BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer",
+      "commit": "db0c418d59202de8451bc342ea6f38b4dfcea02e",
+      "config": {
+        "auto_test_end_day": "20260801",
+        "auto_test_start_ckpt_day": "20260724",
+        "baseline": "BR_train_prod_bs_lr_ema_weights",
+        "branch": "BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer",
+        "enabled": true,
+        "require_inference_benchmark": true,
+        "rolling_enabled": true,
+        "test_end_day": "20260724",
+        "test_start_day": "20260721",
+        "train_end_day": "20260720",
+        "train_start_day": "20260303"
+      },
+      "created_at": "2026-09-03T14:40:12+08:00",
+      "experiment_dir": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer",
+      "failure_reason": null,
+      "finished_at": "2026-09-04T14:15:10+08:00",
+      "job_uuid": null,
+      "launcher_pid": 368226,
+      "processes": [],
+      "require_inference_benchmark": true,
+      "run_id": "BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer@db0c418d5920@attempt_1",
+      "schema_version": 1,
+      "status": "done",
+      "updated_at": "2026-09-04T14:15:10+08:00",
+      "validation": {
+        "artifacts": {
+          "allowed_missing_test_days": [],
+          "allowed_missing_train_days": [],
+          "fixed_log": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer/log/rolling_test_ckpt_20260720_from_20260721_to_20260724_202609040629",
+          "inference_benchmark_config": {
+            "batch_size": 1024,
+            "device": "/device:GPU:0",
+            "measure_batches": 100,
+            "samples": 102400,
+            "warmup_batches": 20
+          },
+          "rolling_metrics": "/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_ema_semantic_domain_concat_multitoken_rankmixer/model/rolling_metrics.tsv"
+        },
+        "checks": {
+          "checkpoints": true,
+          "fixed_log_parseable": true,
+          "inference_benchmark_complete": true,
+          "last_test_day_correct": true,
+          "rolling_logs_complete": true,
+          "rolling_summary_complete": true
+        },
+        "errors": [],
+        "ok": true
+      }
+    }
+  ]
+}
