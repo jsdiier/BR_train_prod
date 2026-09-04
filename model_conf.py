@@ -45,7 +45,7 @@ search_long_query_catel3_seq = list(range(33400, 33450))
 
 # JZ v3 2x2 factorial switches. Each experiment fixes these before training.
 enable_jz_v3_native_seq = False
-enable_jz_v3_sid = False
+enable_jz_v3_sid = True
 
 # Twelve aligned native sequence fields (six pay + six click), each length 50.
 jz_v3_native_pay_seq_fields = [
