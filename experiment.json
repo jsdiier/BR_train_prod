@@ -1,9 +1,10 @@
 {
-  "enabled": false,
-  "manual_only": true,
+  "enabled": true,
+  "manual_only": false,
   "rolling_enabled": false,
   "batch_group": "jz_v3_sequence_sid_factorial_20260904",
-  "baseline": "BR_train_prod_baseline",
+  "baseline": "BR_train_prod_baseline_jz_v3_group1_legacy_seq_control",
+  "original_baseline": "BR_train_prod_baseline",
   "research_parent": "BR_train_prod_baseline",
   "branch": "BR_train_prod_baseline_jz_v3_group1_legacy_seq_control",
   "factorial_group": 1,
