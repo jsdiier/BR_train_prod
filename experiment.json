@@ -5,6 +5,8 @@
   "batch_group": "jz_v3_sequence_sid_factorial_20260904",
   "baseline": "BR_train_prod_baseline",
   "research_parent": "BR_train_prod_baseline",
+  "branch": "BR_train_prod_baseline_jz_v3_group4_native_seq_sid",
+  "factorial_group": 4,
   "train_start_day": "20260303",
   "old_train_end_day": "20260817",
   "new_train_start_day": "20260818",
@@ -13,8 +15,8 @@
   "test_end_day": "20260828",
   "initialization": "from_scratch",
   "factorial": {
-    "native_sequence": false,
-    "sid": false
+    "native_sequence": true,
+    "sid": true
   },
   "require_inference_benchmark": true,
   "data_readiness_gate": {
