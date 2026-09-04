@@ -1,5 +1,16 @@
 # luban
 
+## JZ v3 sequence factorial
+
+The four branches in this family run a matched 2x2 experiment on top of
+`BR_train_prod_baseline`. `fixed_test.sh` trains `20260303-20260817` from the
+legacy JZ source, restores the group-local checkpoint, trains
+`20260818-20260825` from JZ v3, and tests `20260826-20260828` on JZ v3.
+
+The final slot set is fixed from the first batch. Run
+`python verify_factorial_contract.py` before submission to verify that native
+sequence and SID slots match the branch's `experiment.json` switches.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。

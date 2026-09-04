@@ -1,11 +1,28 @@
 {
-  "enabled": true,
-  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "enabled": false,
+  "manual_only": true,
+  "rolling_enabled": false,
+  "batch_group": "jz_v3_sequence_sid_factorial_20260904",
+  "baseline": "BR_train_prod_baseline",
+  "research_parent": "BR_train_prod_baseline",
   "train_start_day": "20260303",
-  "train_end_day": "20260720",
-  "test_start_day": "20260721",
-  "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
-  "require_inference_benchmark": true
+  "old_train_end_day": "20260817",
+  "new_train_start_day": "20260818",
+  "train_end_day": "20260825",
+  "test_start_day": "20260826",
+  "test_end_day": "20260828",
+  "initialization": "from_scratch",
+  "factorial": {
+    "native_sequence": false,
+    "sid": false
+  },
+  "require_inference_benchmark": true,
+  "data_readiness_gate": {
+    "legacy_hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new/train/",
+    "legacy_required_start_day": "20260303",
+    "legacy_required_end_day": "20260817",
+    "v3_hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new_v3/sid_seq/",
+    "v3_required_start_day": "20260818",
+    "v3_required_end_day": "20260828"
+  }
 }

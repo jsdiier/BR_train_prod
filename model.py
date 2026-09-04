@@ -113,6 +113,32 @@ class Model(tf.keras.Model):
         self.attention_layer_search_long_clk = DIN_attention_Layer([50, 20], 'sigmoid', name='search_clk_seq_long')
         self.attention_layer_search_long_query = DIN_attention_Layer([50, 20], 'sigmoid', name='search_query_seq_long')
 
+        if model_conf.enable_jz_v3_native_seq:
+            self.attention_layer_jz_v3_native_pay = DIN_attention_Layer(
+                [50, 20], 'sigmoid', name='jz_v3_native_pay_seq')
+            self.attention_layer_jz_v3_native_click = DIN_attention_Layer(
+                [50, 20], 'sigmoid', name='jz_v3_native_click_seq')
+            self.jz_v3_native_pay_ln = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-5)
+            self.jz_v3_native_pay_proj = tf.keras.layers.Dense(
+                32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+            self.jz_v3_native_pay_combine = tf.keras.layers.Dense(
+                32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+            self.jz_v3_native_click_ln = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-5)
+            self.jz_v3_native_click_proj = tf.keras.layers.Dense(
+                32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+            self.jz_v3_native_click_combine = tf.keras.layers.Dense(
+                32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+
+        if model_conf.enable_jz_v3_sid:
+            self.jz_v3_sid_click_attention_layers = [
+                DIN_attention_Layer([50, 20], 'sigmoid', name='jz_v3_click_sid_%d' % i)
+                for i in range(len(model_conf.jz_v3_sid_candidate_slots))
+            ]
+            self.jz_v3_sid_pay_attention_layers = [
+                DIN_attention_Layer([50, 20], 'sigmoid', name='jz_v3_pay_sid_%d' % i)
+                for i in range(len(model_conf.jz_v3_sid_candidate_slots))
+            ]
+
         # 搜索长序列：先融合多路 embedding，再与 DIN 注意力 + 均值池化残差组合，减轻「高维 concat 噪声」
         seq_token_dim = 32
         self.search_seq_token_dim = seq_token_dim
@@ -347,6 +373,32 @@ class Model(tf.keras.Model):
         att = attention_layer([seq_query, x, x, mask])
         return combine_layer(tf.concat([att, pool], axis=-1))
 
+    def _gather_aligned_sequence_fields(self, pooled_output, slot_mask, field_slot_ids):
+        """Gather aligned fields and use the shop/SID field as validity mask."""
+        field_inputs = []
+        first_mask = None
+        for field_index, slot_ids in enumerate(field_slot_ids):
+            slot_indices = self.slot_id_table.lookup(tf.constant(slot_ids, dtype=tf.int32))
+            field_inputs.append(tf.gather(pooled_output[:, :, 1:], slot_indices, axis=1))
+            if field_index == 0:
+                first_mask = tf.gather(slot_mask, slot_indices, axis=1)
+        return tf.concat(field_inputs, axis=-1), first_mask
+
+    def _encode_jz_v3_sid_sequences(self, pooled_output, slot_mask):
+        outputs = []
+        for index, candidate_slot in enumerate(model_conf.jz_v3_sid_candidate_slots):
+            query_index = self.slot_id_table.lookup(tf.constant([candidate_slot], dtype=tf.int32))
+            query = tf.gather(pooled_output[:, :, 1:], query_index, axis=1)
+            query = tf.reshape(query, [tf.shape(query)[0], model_conf.fm_emb_size])
+            for sequence_fields, attention_layers in (
+                    (model_conf.jz_v3_sid_click_seq_fields, self.jz_v3_sid_click_attention_layers),
+                    (model_conf.jz_v3_sid_pay_seq_fields, self.jz_v3_sid_pay_attention_layers)):
+                slot_indices = self.slot_id_table.lookup(tf.constant(sequence_fields[index], dtype=tf.int32))
+                sequence = tf.gather(pooled_output[:, :, 1:], slot_indices, axis=1)
+                mask = tf.gather(slot_mask, slot_indices, axis=1)
+                outputs.append(attention_layers[index]([query, sequence, sequence, mask]))
+        return outputs
+
     def ads_seq_cross_layer(self, name, nn_inputs, ads_emb, ads_hidden_dim=64, ads_output_dim=1):
         # ads_input_dim = nn_inputs.get_shape().as_list()[-1]
         ads_input_dim = tf.shape(nn_inputs)[-1]
@@ -567,6 +619,26 @@ class Model(tf.keras.Model):
             self.query_seq_ln, self.query_seq_proj, self.query_seq_combine)
         seq_outputs.append(query_search_long_seq_out)
 
+        if model_conf.enable_jz_v3_native_seq:
+            native_pay_input, native_pay_mask = self._gather_aligned_sequence_fields(
+                pooled_output, slot_mask, model_conf.jz_v3_native_pay_seq_fields)
+            seq_outputs.append(self._search_seq_encode_pool_att(
+                native_pay_input, native_pay_mask, emb_shop,
+                self.attention_layer_jz_v3_native_pay,
+                self.jz_v3_native_pay_ln, self.jz_v3_native_pay_proj,
+                self.jz_v3_native_pay_combine))
+
+            native_click_input, native_click_mask = self._gather_aligned_sequence_fields(
+                pooled_output, slot_mask, model_conf.jz_v3_native_click_seq_fields)
+            seq_outputs.append(self._search_seq_encode_pool_att(
+                native_click_input, native_click_mask, emb_shop,
+                self.attention_layer_jz_v3_native_click,
+                self.jz_v3_native_click_ln, self.jz_v3_native_click_proj,
+                self.jz_v3_native_click_combine))
+
+        if model_conf.enable_jz_v3_sid:
+            seq_outputs.extend(self._encode_jz_v3_sid_sequences(pooled_output, slot_mask))
+
         deep = tf.concat([emb_user, emb_shop, emb_interact] + seq_outputs, axis=-1)
 
         # 余数补dims
@@ -600,4 +672,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-

@@ -43,8 +43,48 @@ search_long_clk_seq = list(range(33200, 33250))
 search_long_clk_catel3_seq = list(range(33250, 33300))
 search_long_query_catel3_seq = list(range(33400, 33450))
 
+# JZ v3 2x2 factorial switches. Each experiment fixes these before training.
+enable_jz_v3_native_seq = False
+enable_jz_v3_sid = False
+
+# Twelve aligned native sequence fields (six pay + six click), each length 50.
+jz_v3_native_pay_seq_fields = [
+    list(range(33550, 33600)), list(range(33600, 33650)),
+    list(range(33650, 33700)), list(range(33700, 33750)),
+    list(range(33750, 33800)), list(range(33800, 33850)),
+]
+jz_v3_native_click_seq_fields = [
+    list(range(33850, 33900)), list(range(33900, 33950)),
+    list(range(33950, 34000)), list(range(34000, 34050)),
+    list(range(34050, 34100)), list(range(34100, 34150)),
+]
+
+# Five candidate RQVAE SID slots and aligned click/pay SID sequences.
+jz_v3_sid_candidate_slots = [3013, 3014, 3015, 3016, 3017]
+jz_v3_sid_click_seq_fields = [
+    list(range(341500, 341550)), list(range(341550, 341600)),
+    list(range(341600, 341650)), list(range(341650, 341700)),
+    list(range(341700, 341750)),
+]
+jz_v3_sid_pay_seq_fields = [
+    list(range(341750, 341800)), list(range(341800, 341850)),
+    list(range(341850, 341900)), list(range(341900, 341950)),
+    list(range(341950, 342000)),
+]
+
+if enable_jz_v3_sid:
+    sparse_slot_ids = sparse_slot_ids + jz_v3_sid_candidate_slots
+    lr_slot_ids = lr_slot_ids + jz_v3_sid_candidate_slots
+    shop_fea_list = shop_fea_list + jz_v3_sid_candidate_slots
+
 seq_slot_dict = {"user_click_seq": user_click_seq,"user_pay_seq": user_pay_seq,"user_12h_click_cateid":u_12h_click_cateIds}
 all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+search_long_pay_seq+search_long_pay_catel3_seq+search_long_clk_seq+search_long_clk_catel3_seq+search_long_query_catel3_seq
+if enable_jz_v3_native_seq:
+    all_slot_ids += sum(jz_v3_native_pay_seq_fields + jz_v3_native_click_seq_fields, [])
+if enable_jz_v3_sid:
+    all_slot_ids += sum(jz_v3_sid_click_seq_fields + jz_v3_sid_pay_seq_fields, [])
+
+assert len(all_slot_ids) == len(set(all_slot_ids)), "duplicate registered slot ids"
 
 #第二套emb
 slot_id_v2 = [7,8,9,10,46,49,50,51,52,53,54,55,56,57,59,60,61,62,63,64,67,68,83,84,86,87,94,98,102,159,160,161,163,164,181,182,183,184,186,187,188,189,190,191,192,762,763,764,32901,32902,32903,32904,32905,32906,32907,32908,32909,32910,32911,32912,32913,32914,32915,32916,32917,32918,32919,32920,32921,32922,32923,32924,32925]
