@@ -36,6 +36,21 @@ assert_data_range() {
     done
 }
 
+assert_data_range_allow_missing() {
+    local data_root=$1
+    local day=$2
+    local end_day=$3
+    local allowed_missing_day=$4
+    while [[ "$day" -le "$end_day" ]]; do
+        if [[ "$day" == "$allowed_missing_day" ]]; then
+            echo "known missing training day, train.py will skip: ${data_root%/}/${day}"
+        else
+            assert_data_day "$data_root" "$day"
+        fi
+        day=$(date -d "$day +1 day" +%Y%m%d)
+    done
+}
+
 run_train_range() {
     local data_root=$1
     local start_day=$2
@@ -70,7 +85,8 @@ if ! checkpoint_ready "$old_train_end_day"; then
     run_train_range "$old_train_hdfs_dir" "$train_start_day" "$old_train_end_day"
 fi
 
-assert_data_range "$new_train_hdfs_dir" "$new_train_start_day" "$train_end_day"
+assert_data_range_allow_missing "$new_train_hdfs_dir" "$new_train_start_day" \
+    "$train_end_day" "$known_missing_v3_train_day"
 if ! checkpoint_ready "$train_end_day"; then
     run_train_range "$new_train_hdfs_dir" "$new_train_start_day" "$train_end_day" "$old_train_end_day"
 fi
