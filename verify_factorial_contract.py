@@ -11,9 +11,13 @@ def flatten(groups):
 def main():
     experiment = json.load(open("experiment.json"))
     expected_native = bool(experiment["factorial"]["native_sequence"])
-    expected_sid = bool(experiment["factorial"]["sid"])
+    expected_sid_candidate = bool(
+        experiment["factorial"]["sid_candidate_direct_feature"])
+    expected_sid_sequence = bool(
+        experiment["factorial"]["sid_sequence_din"])
     assert conf.enable_jz_v3_native_seq == expected_native
-    assert conf.enable_jz_v3_sid == expected_sid
+    assert conf.enable_jz_v3_sid_candidate_feature == expected_sid_candidate
+    assert conf.enable_jz_v3_sid_sequence == expected_sid_sequence
 
     native = set(flatten(
         conf.jz_v3_native_pay_seq_fields + conf.jz_v3_native_click_seq_fields))
@@ -29,22 +33,25 @@ def main():
     assert not (native & sid_candidate)
     assert not (sid_sequence & sid_candidate)
     assert (native <= registered) == expected_native
-    assert (sid_sequence <= registered) == expected_sid
-    assert (sid_candidate <= registered) == expected_sid
-    assert (sid_candidate <= set(conf.sparse_slot_ids)) == expected_sid
-    assert (sid_candidate <= set(conf.lr_slot_ids)) == expected_sid
-    assert (sid_candidate <= set(conf.shop_fea_list)) == expected_sid
+    assert (sid_sequence <= registered) == expected_sid_sequence
+    assert (sid_candidate <= registered) == (expected_sid_candidate or expected_sid_sequence)
+    assert (sid_candidate <= set(conf.sparse_slot_ids)) == expected_sid_candidate
+    assert (sid_candidate <= set(conf.lr_slot_ids)) == expected_sid_candidate
+    assert (sid_candidate <= set(conf.shop_fea_list)) == expected_sid_candidate
 
     assert set(range(32841, 32861)) <= registered
     assert set(range(32861, 32881)) <= registered
     assert len(conf.all_slot_ids) == len(registered)
-    expected_registered_count = 1544 + (600 if expected_native else 0) + (505 if expected_sid else 0)
+    expected_registered_count = 1544 + (600 if expected_native else 0)
+    expected_registered_count += 5 if (expected_sid_candidate or expected_sid_sequence) else 0
+    expected_registered_count += 500 if expected_sid_sequence else 0
     assert len(registered) == expected_registered_count, (
         len(registered), expected_registered_count)
 
     print("FACTORIAL_CONTRACT_OK")
-    print("native_sequence=%s sid=%s registered_slots=%d" % (
-        expected_native, expected_sid, len(conf.all_slot_ids)))
+    print("native_sequence=%s sid_candidate=%s sid_sequence=%s registered_slots=%d" % (
+        expected_native, expected_sid_candidate, expected_sid_sequence,
+        len(conf.all_slot_ids)))
 
 
 if __name__ == "__main__":

@@ -129,7 +129,7 @@ class Model(tf.keras.Model):
             self.jz_v3_native_click_combine = tf.keras.layers.Dense(
                 32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
 
-        if model_conf.enable_jz_v3_sid:
+        if model_conf.enable_jz_v3_sid_sequence:
             self.jz_v3_sid_click_attention_layers = [
                 DIN_attention_Layer([50, 20], 'sigmoid', name='jz_v3_click_sid_%d' % i)
                 for i in range(len(model_conf.jz_v3_sid_candidate_slots))
@@ -636,7 +636,7 @@ class Model(tf.keras.Model):
                 self.jz_v3_native_click_ln, self.jz_v3_native_click_proj,
                 self.jz_v3_native_click_combine))
 
-        if model_conf.enable_jz_v3_sid:
+        if model_conf.enable_jz_v3_sid_sequence:
             seq_outputs.extend(self._encode_jz_v3_sid_sequences(pooled_output, slot_mask))
 
         deep = tf.concat([emb_user, emb_shop, emb_interact] + seq_outputs, axis=-1)

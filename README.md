@@ -2,6 +2,12 @@
 
 ## JZ v3 sequence factorial
 
+### Current attribution arm
+
+This branch isolates SID history matching. The five candidate-shop SID values
+are loaded only as DIN queries and do not enter LR/FM or the ordinary shop
+representation. Ten click/pay SID DIN paths are enabled.
+
 The four branches in this family run a matched 2x2 experiment on top of
 `BR_train_prod_baseline`. `fixed_test.sh` trains `20260303-20260817` from the
 legacy JZ source, restores the group-local checkpoint, trains

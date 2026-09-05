@@ -45,7 +45,8 @@ search_long_query_catel3_seq = list(range(33400, 33450))
 
 # JZ v3 2x2 factorial switches. Each experiment fixes these before training.
 enable_jz_v3_native_seq = False
-enable_jz_v3_sid = True
+enable_jz_v3_sid_candidate_feature = False
+enable_jz_v3_sid_sequence = True
 
 # Twelve aligned native sequence fields (six pay + six click), each length 50.
 jz_v3_native_pay_seq_fields = [
@@ -72,7 +73,7 @@ jz_v3_sid_pay_seq_fields = [
     list(range(341950, 342000)),
 ]
 
-if enable_jz_v3_sid:
+if enable_jz_v3_sid_candidate_feature:
     sparse_slot_ids = sparse_slot_ids + jz_v3_sid_candidate_slots
     lr_slot_ids = lr_slot_ids + jz_v3_sid_candidate_slots
     shop_fea_list = shop_fea_list + jz_v3_sid_candidate_slots
@@ -81,7 +82,11 @@ seq_slot_dict = {"user_click_seq": user_click_seq,"user_pay_seq": user_pay_seq,"
 all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+search_long_pay_seq+search_long_pay_catel3_seq+search_long_clk_seq+search_long_clk_catel3_seq+search_long_query_catel3_seq
 if enable_jz_v3_native_seq:
     all_slot_ids += sum(jz_v3_native_pay_seq_fields + jz_v3_native_click_seq_fields, [])
-if enable_jz_v3_sid:
+if enable_jz_v3_sid_sequence:
+    if not enable_jz_v3_sid_candidate_feature:
+        # Query-only: required by DIN, but intentionally excluded from
+        # sparse_slot_ids/lr_slot_ids/shop_fea_list for clean attribution.
+        all_slot_ids += jz_v3_sid_candidate_slots
     all_slot_ids += sum(jz_v3_sid_click_seq_fields + jz_v3_sid_pay_seq_fields, [])
 
 assert len(all_slot_ids) == len(set(all_slot_ids)), "duplicate registered slot ids"
