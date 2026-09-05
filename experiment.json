@@ -12,8 +12,8 @@
   "old_train_end_day": "20260817",
   "new_train_start_day": "20260818",
   "train_end_day": "20260825",
-  "test_start_day": "20260826",
-  "test_end_day": "20260828",
+  "test_start_day": "20260829",
+  "test_end_day": "20260831",
   "initialization": "from_scratch",
   "factorial": {
     "native_sequence": false,
@@ -26,6 +26,7 @@
     "legacy_required_end_day": "20260817",
     "v3_hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new_v3/sid_seq/",
     "v3_required_start_day": "20260818",
-    "v3_required_end_day": "20260828"
+    "v3_missing_train_days": ["20260824"],
+    "v3_required_end_day": "20260831"
   }
 }

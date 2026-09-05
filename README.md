@@ -5,7 +5,8 @@
 The four branches in this family run a matched 2x2 experiment on top of
 `BR_train_prod_baseline`. `fixed_test.sh` trains `20260303-20260817` from the
 legacy JZ source, restores the group-local checkpoint, trains
-`20260818-20260825` from JZ v3, and tests `20260826-20260828` on JZ v3.
+`20260818-20260825` from JZ v3 (skipping the known missing day
+`20260824`), and tests `20260829-20260831` on JZ v3.
 
 The final slot set is fixed from the first batch. Run
 `python verify_factorial_contract.py` before submission to verify that native
