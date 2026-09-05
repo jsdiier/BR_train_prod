@@ -1,0 +1,5 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct
+BR_train_prod_baseline_jz_v3_group1_legacy_seq_control	yes	yes	yes	yes
+BR_train_prod_baseline_jz_v3_group2_native_seq	yes	yes	yes	yes
+BR_train_prod_baseline_jz_v3_group3_sid	yes	yes	yes	yes
+BR_train_prod_baseline_jz_v3_group4_native_seq_sid	yes	yes	yes	yes
