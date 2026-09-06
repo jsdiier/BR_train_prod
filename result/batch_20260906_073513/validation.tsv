@@ -1,0 +1,3 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct
+BR_train_prod_baseline_jz_v3_sid_candidate_only	yes	yes	yes	yes
+BR_train_prod_baseline_jz_v3_sid_sequence_only	yes	yes	yes	yes
