@@ -113,6 +113,21 @@ class Model(tf.keras.Model):
         self.attention_layer_search_long_clk = DIN_attention_Layer([50, 20], 'sigmoid', name='search_clk_seq_long')
         self.attention_layer_search_long_query = DIN_attention_Layer([50, 20], 'sigmoid', name='search_query_seq_long')
 
+        self.attention_layer_jz_v3_native_pay = DIN_attention_Layer(
+            [50, 20], 'sigmoid', name='jz_v3_native_pay_seq')
+        self.attention_layer_jz_v3_native_click = DIN_attention_Layer(
+            [50, 20], 'sigmoid', name='jz_v3_native_click_seq')
+        self.jz_v3_native_pay_ln = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-5)
+        self.jz_v3_native_pay_proj = tf.keras.layers.Dense(
+            32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+        self.jz_v3_native_pay_combine = tf.keras.layers.Dense(
+            32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+        self.jz_v3_native_click_ln = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-5)
+        self.jz_v3_native_click_proj = tf.keras.layers.Dense(
+            32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+        self.jz_v3_native_click_combine = tf.keras.layers.Dense(
+            32, activation=tf.nn.swish, kernel_regularizer=regularizers.l2(model_conf.l2_reg))
+
         # The five SID fields at one history position describe the same shop.
         # Fuse them first, then keep only one click and one pay DIN path.
         self.attention_layer_jz_v3_sid_click = DIN_attention_Layer(
@@ -623,6 +638,22 @@ class Model(tf.keras.Model):
             self.attention_layer_search_long_query,
             self.query_seq_ln, self.query_seq_proj, self.query_seq_combine)
         seq_outputs.append(query_search_long_seq_out)
+
+        native_pay_input, native_pay_mask = self._gather_aligned_sequence_fields(
+            pooled_output, slot_mask, model_conf.jz_v3_native_pay_seq_fields)
+        seq_outputs.append(self._search_seq_encode_pool_att(
+            native_pay_input, native_pay_mask, emb_shop,
+            self.attention_layer_jz_v3_native_pay,
+            self.jz_v3_native_pay_ln, self.jz_v3_native_pay_proj,
+            self.jz_v3_native_pay_combine))
+
+        native_click_input, native_click_mask = self._gather_aligned_sequence_fields(
+            pooled_output, slot_mask, model_conf.jz_v3_native_click_seq_fields)
+        seq_outputs.append(self._search_seq_encode_pool_att(
+            native_click_input, native_click_mask, emb_shop,
+            self.attention_layer_jz_v3_native_click,
+            self.jz_v3_native_click_ln, self.jz_v3_native_click_proj,
+            self.jz_v3_native_click_combine))
 
         seq_outputs.extend(self._encode_jz_v3_sid_sequences(pooled_output, slot_mask))
 

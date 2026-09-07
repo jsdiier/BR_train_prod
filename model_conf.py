@@ -43,6 +43,18 @@ search_long_clk_seq = list(range(33200, 33250))
 search_long_clk_catel3_seq = list(range(33250, 33300))
 search_long_query_catel3_seq = list(range(33400, 33450))
 
+# Native shop sequences: six aligned fields for pay and click, length 50.
+jz_v3_native_pay_seq_fields = [
+    list(range(33550, 33600)), list(range(33600, 33650)),
+    list(range(33650, 33700)), list(range(33700, 33750)),
+    list(range(33750, 33800)), list(range(33800, 33850)),
+]
+jz_v3_native_click_seq_fields = [
+    list(range(33850, 33900)), list(range(33900, 33950)),
+    list(range(33950, 34000)), list(range(34000, 34050)),
+    list(range(34050, 34100)), list(range(34100, 34150)),
+]
+
 # Five candidate RQVAE SID fields and five aligned history fields per action.
 # Model-side consumption fuses them into one click and one pay DIN path.
 jz_v3_sid_sequence_mode = "aligned_fused_2seq"
@@ -64,6 +76,7 @@ shop_fea_list = shop_fea_list + jz_v3_sid_candidate_slots
 
 seq_slot_dict = {"user_click_seq": user_click_seq,"user_pay_seq": user_pay_seq,"user_12h_click_cateid":u_12h_click_cateIds}
 all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+search_long_pay_seq+search_long_pay_catel3_seq+search_long_clk_seq+search_long_clk_catel3_seq+search_long_query_catel3_seq
+all_slot_ids += sum(jz_v3_native_pay_seq_fields + jz_v3_native_click_seq_fields, [])
 all_slot_ids += sum(jz_v3_sid_click_seq_fields + jz_v3_sid_pay_seq_fields, [])
 assert len(all_slot_ids) == len(set(all_slot_ids)), "duplicate registered slot ids"
 

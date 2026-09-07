@@ -15,6 +15,7 @@ def main():
     click_slots = flatten(conf.jz_v3_sid_click_seq_fields)
     pay_slots = flatten(conf.jz_v3_sid_pay_seq_fields)
     candidates = conf.jz_v3_sid_candidate_slots
+    native_slots = flatten(conf.jz_v3_native_pay_seq_fields + conf.jz_v3_native_click_seq_fields)
 
     assert experiment["sid_sequence_mode"] == "aligned_fused_2seq"
     assert experiment["sid_sequence_paths"] == 2
@@ -25,6 +26,9 @@ def main():
     assert all(len(field) == 50 for field in conf.jz_v3_sid_click_seq_fields)
     assert all(len(field) == 50 for field in conf.jz_v3_sid_pay_seq_fields)
     assert set(candidates + click_slots + pay_slots) <= set(conf.all_slot_ids)
+    assert len(native_slots) == 600 and len(set(native_slots)) == 600
+    assert set(native_slots) <= set(conf.all_slot_ids)
+    assert experiment["native_sequence_paths"] == 2
     assert "jz_v3_sid_click_attention_layers" not in source
     assert "jz_v3_sid_pay_attention_layers" not in source
     pattern = (r"DIN_attention_Layer\(\s*\n?\s*\[50, 20\], 'sigmoid', "
@@ -33,7 +37,7 @@ def main():
     assert "return [click_output, pay_output]" in source
 
     print("SID_FUSED_CONTRACT_OK")
-    print("registered_slots=%d sid_sequence_paths=2" % len(set(conf.all_slot_ids)))
+    print("registered_slots=%d native_paths=2 sid_sequence_paths=2" % len(set(conf.all_slot_ids)))
 
 
 if __name__ == "__main__":

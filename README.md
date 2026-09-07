@@ -7,6 +7,9 @@ two aligned SID history paths. Five SID embeddings at the same history position
 are concatenated before DIN, producing one click and one pay sequence token
 instead of ten independent SID paths.
 
+This combination branch also enables the two aligned native shop history paths
+(click and pay), so it contributes two native tokens and two fused SID tokens.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。
