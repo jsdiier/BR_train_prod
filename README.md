@@ -1,5 +1,13 @@
 # luban
 
+## Experiment: EMA JZ-v3 legacy-sequence matched control
+
+This branch keeps the complete `BR_train_prod_bs_lr_ema_weights` model and slot
+configuration. It changes only the matched data/evaluation protocol: legacy JZ
+training through 20260817, JZ-v3 training through 20260825 (20260824 missing),
+fixed evaluation on 20260829-20260831, then prequential rolling evaluation on
+20260901-20260905. No JZ-v3 native-sequence or SID slot is registered.
+
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
 **做什么**：从 HDFS 读 GZIP TFRecord → 训练多任务模型 → 导出 serving 模型 / checkpoint → 可选训后评估。

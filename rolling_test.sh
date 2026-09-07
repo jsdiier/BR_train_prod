@@ -97,20 +97,14 @@ if [[ "$auto_test_end_day" -lt "$first_rolling_test_day" ]]; then
     exit 1
 fi
 
-# Phase 1: reproduce the best baseline checkpoint and preserve the original fixed-window test.
-if ! checkpoint_ready "$train_end_day"; then
-    run_train_range "$train_start_day" "$train_end_day"
-fi
-assert_ready_range "$test_start_day" "$test_end_day"
-run_test_window "$train_end_day" "$test_start_day" "$test_end_day"
-
-# Phase 2: consume the old fixed test window as training data and create the rolling seed checkpoint.
+# fixed_test.sh creates the 0831 seed only after evaluating 0829-0831 with the
+# frozen 0825 checkpoint. Starting here avoids fixed-window label leakage.
 if ! checkpoint_ready "$auto_test_start_ckpt_day"; then
-    seed_train_start=$(date_next "$train_end_day")
-    run_train_range "$seed_train_start" "$auto_test_start_ckpt_day" "$train_end_day"
+    echo "rolling seed checkpoint is not ready: $auto_test_start_ckpt_day"
+    exit 1
 fi
 
-# Phase 3: prequential rolling evaluation: checkpoint(D) tests D+1, then D+1 is trained.
+# Prequential rolling evaluation: checkpoint(D) tests D+1, then D+1 is trained.
 ckpt_day=$auto_test_start_ckpt_day
 test_day=$(date_next "$ckpt_day")
 while [[ "$test_day" -le "$auto_test_end_day" ]]; do
