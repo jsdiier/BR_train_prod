@@ -27,8 +27,10 @@ class Model(tf.keras.Model):
         self.ads_layers_cache = {}
 
         self.loss_bc = tf.keras.losses.binary_crossentropy
-        self.lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(model_conf.learning_rate, decay_steps=1000000,
-                                                                          decay_rate=1, staircase=False)
+        self.lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+            initial_learning_rate=model_conf.learning_rate,
+            decay_steps=1000000,
+            alpha=0.5)
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_schedule, beta_1=0.9, beta_2=0.999,
                                                   epsilon=1e-07, amsgrad=False, name='Adam')
 
@@ -600,4 +602,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-
