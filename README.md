@@ -1,12 +1,11 @@
 # luban
 
-## Experiment: EMA JZ-v3 legacy-sequence matched control
+## Experiment: EMA Lookahead Adam
 
-This branch keeps the complete `BR_train_prod_bs_lr_ema_weights` model and slot
-configuration. It changes only the matched data/evaluation protocol: legacy JZ
-training through 20260817, JZ-v3 training through 20260825 (20260824 missing),
-fixed evaluation on 20260829-20260831, then prequential rolling evaluation on
-20260901-20260905. No JZ-v3 native-sequence or SID slot is registered.
+This branch uses the EMA JZ-v3 matched-control protocol and adds Lookahead around
+the existing Adam optimizer (`k=5`, `alpha=0.5`). EMA is updated once after the
+batch's final online weights. Checkpoints preserve Adam, Lookahead and EMA state;
+SavedModel serving contains only the final EMA model and has no Lookahead input.
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 

@@ -12,11 +12,62 @@ from tensorflow.keras import regularizers
 import time
 from sklearn import metrics
 
+
+class LookaheadEmaState(tf.Module):
+    """Checkpointed slow weights, Lookahead step, and EMA shadow weights."""
+
+    def __init__(self, weights, k=5, alpha=0.5, ema_decay=0.999):
+        super(LookaheadEmaState, self).__init__(name='lookahead_ema_state')
+        self.k = int(k)
+        self.alpha = float(alpha)
+        self.ema_decay = float(ema_decay)
+        self.step = tf.Variable(0, dtype=tf.int64, trainable=False, name='lookahead_step')
+        self.slow_weights = [
+            tf.Variable(weight, trainable=False, name='lookahead_slow_%04d' % index)
+            for index, weight in enumerate(weights)
+        ]
+        self.ema_weights = [
+            tf.Variable(weight, trainable=False, name='ema_shadow_%04d' % index)
+            for index, weight in enumerate(weights)
+        ]
+
+    def after_fast_update(self, weights):
+        """Apply periodic slow sync, then update EMA exactly once."""
+        self.step.assign_add(1)
+
+        def sync_slow_and_fast():
+            for slow, fast in zip(self.slow_weights, weights):
+                slow.assign_add(self.alpha * (fast - slow))
+                fast.assign(slow)
+            return tf.constant(0, dtype=tf.int32)
+
+        tf.cond(
+            tf.equal(tf.math.floormod(self.step, self.k), 0),
+            sync_slow_and_fast,
+            lambda: tf.constant(0, dtype=tf.int32))
+
+        for ema_weight, online_weight in zip(self.ema_weights, weights):
+            ema_weight.assign(
+                self.ema_decay * ema_weight
+                + (1.0 - self.ema_decay) * online_weight)
+
+    def materialize_ema_checkpoint(self, weights):
+        """Match baseline checkpoint semantics and keep slow state coherent."""
+        for ema_weight, slow_weight, online_weight in zip(
+                self.ema_weights, self.slow_weights, weights):
+            online_weight.assign(ema_weight)
+            slow_weight.assign(ema_weight)
+
+
 class Learner:
     def __init__(self):
         self.model = None
-        self.ema_vars = None
-        self.ema_decay = 0.999
+        self.optimizer_trajectory = None
+
+    def initialize_optimizer_trajectory(self):
+        if self.optimizer_trajectory is None:
+            self.optimizer_trajectory = LookaheadEmaState(
+                self.model.trainable_weights, k=5, alpha=0.5, ema_decay=0.999)
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -37,9 +88,7 @@ class Learner:
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
+        self.optimizer_trajectory.after_fast_update(model.trainable_weights)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
     def _date_range(self, start, end):
@@ -83,30 +132,29 @@ class Learner:
         batch_size = model_conf.batch_size
         shuffle_size = batch_size * 10
 
-        #load ckpt (需要先跑一个 batch 建好变量再 restore)
+        # Build model/state before restore so Lookahead, EMA and Adam slots are all trackable.
         ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
-        if ckpt_path is not None:
-            print("load model from checkpoint:", ckpt_path)
-            ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-
-            probe_files = self.get_day_files(data_arg, days[0])
-            probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size, fetch_size=1, num_parallel=10)
-            first_batch = next(iter(probe_ds))
-            _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-
-            dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
-            model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
-
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
-            print("Restored optimizer step: ", model.optimizer.iterations.numpy())
-            print("load checkpoint path: ", ckpt_path)
-
         probe_files = self.get_day_files(data_arg, days[0])
         probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
                                      fetch_size=1, num_parallel=10)
         first_batch = next(iter(probe_ds))
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
+
+        if ckpt_path is not None:
+            print("load model from checkpoint:", ckpt_path)
+            dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
+            model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
+            self.initialize_optimizer_trajectory()
+            ckpt = tf.train.Checkpoint(
+                model=model,
+                optimizer=model.optimizer,
+                optimizer_trajectory=self.optimizer_trajectory)
+            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            print("Restored optimizer step: ", model.optimizer.iterations.numpy())
+            print("Restored Lookahead step: ", self.optimizer_trajectory.step.numpy())
+            print("load checkpoint path: ", ckpt_path)
+        else:
+            self.initialize_optimizer_trajectory()
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
@@ -266,12 +314,13 @@ class Learner:
 
     def save_checkpoint(self, day):
         model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
+        self.optimizer_trajectory.materialize_ema_checkpoint(model.trainable_weights)
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
-        ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        ckpt = tf.train.Checkpoint(
+            model=model,
+            optimizer=model.optimizer,
+            optimizer_trajectory=self.optimizer_trajectory)
         ckpt.save(export_dir)
 
         done_dir = os.path.dirname(model_conf.done_file_path)
@@ -292,9 +341,7 @@ class Learner:
             return
 
         train_model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, train_model.trainable_weights):
-                w.assign(ema_v)
+        self.optimizer_trajectory.materialize_ema_checkpoint(train_model.trainable_weights)
 
         fid_keys, fid_values = train_model.fid_table.export()
         fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()

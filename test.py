@@ -50,8 +50,12 @@ class Learner:
             dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
             model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
 
-            #ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).expect_partial()
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            # Evaluation restores model/Adam only. The checkpoint also contains
+            # training-only Lookahead/EMA trajectory state, which must not enter
+            # the inference graph.
+            restore_status = ckpt.restore(tf.train.latest_checkpoint(ckpt_path))
+            restore_status.expect_partial()
+            restore_status.assert_existing_objects_matched()
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
             print("load checkpoint path: ", ckpt_path)
 
