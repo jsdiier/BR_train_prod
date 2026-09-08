@@ -2,11 +2,11 @@
   "enabled": true,
   "manual_only": false,
   "rolling_enabled": true,
-  "batch_group": "ema_jz_v3_optimizer_architecture_20260907",
-  "baseline": "BR_train_prod_ema_jz_v3_legacy_seq_control",
+  "batch_group": "jz_v3_3source_attribution_20260908",
+  "baseline": "BR_train_EMA_lr_bs_baseline",
   "original_baseline": "BR_train_prod_bs_lr_ema_weights",
   "research_parent": "BR_train_prod_bs_lr_ema_weights",
-  "branch": "BR_train_prod_ema_jz_v3_legacy_seq_control",
+  "branch": "BR_train_EMA_lr_bs_baseline",
   "train_start_day": "20260303",
   "old_train_end_day": "20260817",
   "new_train_start_day": "20260818",
@@ -14,8 +14,15 @@
   "test_start_day": "20260829",
   "test_end_day": "20260831",
   "auto_test_start_ckpt_day": "20260831",
-  "auto_test_end_day": "20260905",
+  "auto_test_end_day": "20260906",
   "initialization": "from_scratch",
+  "change": "matched_control_simulating_legacy_sequence_outage",
+  "factorial": {
+    "native_shop_sequence": false,
+    "candidate_shop_sid": false,
+    "sid_sequence": false
+  },
+  "expected_metric_rows": 28,
   "allowed_missing_train_days": [],
   "allowed_missing_test_days": [],
   "require_inference_benchmark": true,
@@ -26,6 +33,6 @@
     "v3_hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new_v3/sid_seq/",
     "v3_required_start_day": "20260818",
     "v3_missing_train_days": ["20260824"],
-    "v3_required_end_day": "20260905"
+    "v3_required_end_day": "20260906"
   }
 }
