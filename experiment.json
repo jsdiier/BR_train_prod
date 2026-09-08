@@ -6,7 +6,7 @@
   "baseline": "BR_train_EMA_lr_bs_baseline",
   "original_baseline": "BR_train_prod_bs_lr_ema_weights",
   "research_parent": "BR_train_prod_bs_lr_ema_weights",
-  "branch": "BR_train_EMA_lr_bs_baseline",
+  "branch": "BR_train_only_SID_seq",
   "train_start_day": "20260303",
   "old_train_end_day": "20260817",
   "new_train_start_day": "20260818",
@@ -16,12 +16,14 @@
   "auto_test_start_ckpt_day": "20260831",
   "auto_test_end_day": "20260906",
   "initialization": "from_scratch",
-  "change": "matched_control_simulating_legacy_sequence_outage",
+  "change": "add_two_aligned_sid_history_sequences_without_candidate_sid",
   "factorial": {
     "native_shop_sequence": false,
     "candidate_shop_sid": false,
-    "sid_sequence": false
+    "sid_sequence": true
   },
+  "sid_sequence_mode": "aligned_fused_2seq_with_baseline_shop_query",
+  "sid_sequence_paths": 2,
   "expected_metric_rows": 28,
   "allowed_missing_train_days": [],
   "allowed_missing_test_days": [],
