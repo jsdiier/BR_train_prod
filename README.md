@@ -1,13 +1,13 @@
 # luban
 
-## Experiment: EMA/LR/BS matched sequence-outage control
+## Experiment: native Shop sequence only
 
-This branch keeps the complete `BR_train_prod_bs_lr_ema_weights` model and slot
-configuration. It changes only the matched data/evaluation protocol: legacy JZ
-training through 20260817, JZ-v3 training through 20260825 (20260824 missing),
-fixed evaluation on 20260829-20260831, then prequential rolling evaluation on
-20260901-20260906. No JZ-v3 native-sequence or SID slot is registered. The
-result contract contains 4 fixed-window rows and 24 rolling rows.
+This branch keeps the complete `BR_train_prod_bs_lr_ema_weights` configuration.
+The future native Shop sequence ranges for feature-list slots 3001-3012 are
+registered from initialization, remain inactive on legacy data through
+20260817, and form one pay plus one click DIN path on JZ-v3 data from 20260818.
+Candidate SID and SID-sequence features are absent. Evaluation uses the matched
+fixed and rolling protocol through 20260906 (4 fixed + 24 rolling metric rows).
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
