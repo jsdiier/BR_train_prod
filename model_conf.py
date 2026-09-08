@@ -43,8 +43,16 @@ search_long_clk_seq = list(range(33200, 33250))
 search_long_clk_catel3_seq = list(range(33250, 33300))
 search_long_query_catel3_seq = list(range(33400, 33450))
 
+# Candidate Shop RQVAE SID direct features. Sequence ranges are intentionally
+# absent so this branch attributes only the candidate-side SID source.
+jz_v3_sid_candidate_slots = [3013, 3014, 3015, 3016, 3017]
+sparse_slot_ids = sparse_slot_ids + jz_v3_sid_candidate_slots
+lr_slot_ids = lr_slot_ids + jz_v3_sid_candidate_slots
+shop_fea_list = shop_fea_list + jz_v3_sid_candidate_slots
+
 seq_slot_dict = {"user_click_seq": user_click_seq,"user_pay_seq": user_pay_seq,"user_12h_click_cateid":u_12h_click_cateIds}
 all_slot_ids=sparse_slot_ids+user_click_seq+user_pay_seq+u_12h_click_cateIds+search_long_pay_seq+search_long_pay_catel3_seq+search_long_clk_seq+search_long_clk_catel3_seq+search_long_query_catel3_seq
+assert len(all_slot_ids) == len(set(all_slot_ids)), "duplicate registered slot ids"
 
 #第二套emb
 slot_id_v2 = [7,8,9,10,46,49,50,51,52,53,54,55,56,57,59,60,61,62,63,64,67,68,83,84,86,87,94,98,102,159,160,161,163,164,181,182,183,184,186,187,188,189,190,191,192,762,763,764,32901,32902,32903,32904,32905,32906,32907,32908,32909,32910,32911,32912,32913,32914,32915,32916,32917,32918,32919,32920,32921,32922,32923,32924,32925]
