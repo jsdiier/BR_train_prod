@@ -120,4 +120,11 @@ while [[ "$test_day" -le "$auto_test_end_day" ]]; do
 done
 
 $python rolling_test_summary.py --log-dir log --output model/rolling_metrics.tsv
+$python verify_metrics_contract.py \
+    --input model/rolling_metrics.tsv \
+    --fixed-checkpoint "$train_end_day" \
+    --fixed-start "$test_start_day" \
+    --fixed-end "$test_end_day" \
+    --rolling-seed "$auto_test_start_ckpt_day" \
+    --rolling-end "$auto_test_end_day"
 echo "rolling test completed through test day ${auto_test_end_day}"

@@ -7,7 +7,7 @@ import re
 
 
 FILE_RE = re.compile(
-    r"rolling_test_ckpt_(\d{8})_from_(\d{8})_to_(\d{8})_(\d{12,14})$"
+    r"(?:rolling|fixed)_test_ckpt_(\d{8})_from_(\d{8})_to_(\d{8})_(\d{12,14})$"
 )
 METRIC_RE = re.compile(
     r"test_(buy|cat|click|ext)\s+auc:([\d.]+)\s+gauc:([\d.]+)\s+"
@@ -22,7 +22,9 @@ def main():
     args = parser.parse_args()
 
     latest = {}
-    for path in glob.glob(os.path.join(args.log_dir, "rolling_test_ckpt_*")):
+    paths = glob.glob(os.path.join(args.log_dir, "rolling_test_ckpt_*"))
+    paths.extend(glob.glob(os.path.join(args.log_dir, "fixed_test_ckpt_*")))
+    for path in paths:
         match = FILE_RE.search(os.path.basename(path))
         if not match:
             continue
