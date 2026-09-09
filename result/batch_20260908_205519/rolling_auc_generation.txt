@@ -1,0 +1,6 @@
+[INFO] BR_train_EMA_lr_bs_baseline: 28 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_EMA_lr_bs_baseline/model/rolling_metrics.tsv
+[INFO] BR_train_merge_3_new_fea: 28 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_merge_3_new_fea/model/rolling_metrics.tsv
+[INFO] BR_train_only_SID_seq: 28 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_only_SID_seq/model/rolling_metrics.tsv
+[INFO] BR_train_only_shop_SID: 28 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_only_shop_SID/model/rolling_metrics.tsv
+[INFO] BR_train_only_shop_seq: 28 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_only_shop_seq/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260908_205519/rolling_auc.html

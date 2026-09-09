@@ -1,0 +1,6 @@
+branch	checkpoints	fixed_log_parseable	inference_benchmark_complete	last_test_day_correct	rolling_logs_complete	rolling_summary_complete
+BR_train_EMA_lr_bs_baseline	yes	yes	yes	yes	yes	yes
+BR_train_merge_3_new_fea	yes	yes	yes	yes	yes	yes
+BR_train_only_SID_seq	yes	yes	yes	yes	yes	yes
+BR_train_only_shop_SID	yes	yes	yes	yes	yes	yes
+BR_train_only_shop_seq	yes	yes	yes	yes	yes	yes
