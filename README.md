@@ -25,12 +25,21 @@ slot 1044 在每条样本中都存在，并由两个 FID 分别表示 `is_ad=0/1
 bash run_ad_segment_diagnostic.sh inspect
 ```
 
-根据输出样本到原始特征日志确认哪个 FID 对应 `is_ad=1` 后，再运行完整诊断：
+根据输出样本到原始特征日志确认哪个 FID 对应 `is_ad=1` 后，可以在本机运行完整诊断：
 
 ```bash
 nohup bash run_ad_segment_diagnostic.sh run 293859875685924864 \
   > nohup_ad_segment_diagnostic.log 2>&1 &
 ```
+
+上面的命令会直接占用当前机器的本地 GPU。正式诊断应手动提交到鲁班：
+
+```bash
+nohup bash submit_luban.sh > nohup_submit_ad_segment_diagnostic.log 2>&1 &
+```
+
+`submit_luban.sh` 只在当前机器上提交和轮询任务；实际推理由鲁班执行
+`run_ad_segment_diagnostic_luban.sh`。实验保持 `enabled=false`、`manual_only=true`，不会被自动化实验批次发现。
 
 最终结果位于：
 

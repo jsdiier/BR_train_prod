@@ -21,6 +21,7 @@
   "saliency_pruned_count": 356,
   "initialization": "from_scratch",
   "diagnostic_only": true,
+  "execution": "manual_luban_test_only",
   "checkpoint_day": "20260825",
   "ad_indicator": {
     "raw_field": "is_ad",

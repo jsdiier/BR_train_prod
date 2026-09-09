@@ -8,7 +8,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "${SCRIPT_DIR}"
 source ./common.conf
 
-BASE_DIR=/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod
+BASE_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 DATA_ROOT=hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train
 BASELINE_DIR=${BASE_DIR}/BR_train_prod_bs_lr_ema_weights
 TOP1700_DIR=${BASE_DIR}/BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_e2e
