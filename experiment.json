@@ -2,8 +2,9 @@
   "enabled": false,
   "manual_only": true,
   "rolling_enabled": false,
-  "batch_group": "manual_saliency_remain1700_e2e_20260831",
-  "baseline": "BR_train_prod_ema_interest_feature_tfrecord_fixed_fullslot_e2e",
+  "batch_group": "manual_ad_segment_diagnostic_20260909",
+  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "candidate": "BR_train_prod_ema_interest_feature_tfrecord_fixed_remain1700_e2e",
   "research_parent": "BR_train_prod_ema_interest_feature_fusion_tfrecord_fixed",
   "train_start_day": "20260303",
   "train_end_day": "20260825",
@@ -19,7 +20,20 @@
   "saliency_gradient_steps": 5597,
   "saliency_pruned_count": 356,
   "initialization": "from_scratch",
-  "require_inference_benchmark": true,
+  "diagnostic_only": true,
+  "checkpoint_day": "20260825",
+  "ad_indicator": {
+    "raw_field": "is_ad",
+    "slot_id": 1044,
+    "feature_name": "is_ad_dm",
+    "mapping_requires_audit": true
+  },
+  "outputs": [
+    "organic_and_ad_task_auc",
+    "organic_and_ad_score_distribution",
+    "request_level_ad_minus_organic_score_gap"
+  ],
+  "require_inference_benchmark": false,
   "data_readiness_gate": {
     "hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_fixed/train/",
     "required_start_day": "20260815",
