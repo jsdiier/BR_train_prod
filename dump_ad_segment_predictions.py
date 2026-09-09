@@ -148,6 +148,7 @@ def metadata_and_ad_fid(tf, feat, batch_size):
 
 def main():
     args = arguments()
+    output_path = os.path.abspath(args.output)
     tf, model_conf, ut, Model = bootstrap(args.experiment_dir)
     files, files_by_day = data_files(tf, args.data_root, args.start_day, args.end_day)
     batch_size = int(model_conf.batch_size)
@@ -213,11 +214,11 @@ def main():
             sort_keys=True,
         )
     )
-    output_dir = os.path.dirname(os.path.abspath(args.output))
+    output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.isdir(output_dir):
         os.makedirs(output_dir)
-    np.savez(args.output, **result)
-    print("INFERENCE_COMPLETED label=%s samples=%d output=%s" % (args.label, total, args.output))
+    np.savez(output_path, **result)
+    print("INFERENCE_COMPLETED label=%s samples=%d output=%s" % (args.label, total, output_path))
 
 
 if __name__ == "__main__":

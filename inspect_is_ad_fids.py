@@ -68,6 +68,7 @@ def decode(value):
 
 def main():
     args = arguments()
+    output_path = os.path.abspath(args.output)
     tf, ut = bootstrap(args.experiment_dir)
     files = data_files(tf, args.data_root, args.start_day, args.end_day)
     dataset = ut.ReadTFRecordV2(
@@ -139,10 +140,10 @@ def main():
             "binary is_ad slot must have exactly 2 FIDs; got=%s" % dict(counts)
         )
 
-    output_dir = os.path.dirname(os.path.abspath(args.output))
+    output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.isdir(output_dir):
         os.makedirs(output_dir)
-    with open(args.output, "w") as handle:
+    with open(output_path, "w") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
         writer.writerow(
             ["fid", "count", "ratio", "traceid", "recid", "shopid", "request_time"]
@@ -157,7 +158,7 @@ def main():
     for fid, count in counts.most_common():
         print("IS_AD_FID fid=%d count=%d ratio=%.6f" % (fid, count, float(count) / total))
     print("IMPORTANT map one FID to raw is_ad=1 using the printed sample IDs; do not guess")
-    print("OUTPUT %s" % os.path.abspath(args.output))
+    print("OUTPUT %s" % output_path)
 
 
 if __name__ == "__main__":
