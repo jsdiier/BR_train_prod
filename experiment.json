@@ -1,12 +1,13 @@
 {
   "enabled": false,
   "manual_only": true,
+  "run_mode": "manual_continuation_checkpoint_only",
   "baseline": "BR_train_prod_bs_lr_ema_weights",
-  "train_start_day": "20260303",
-  "train_end_day": "20260720",
-  "test_start_day": "20260721",
-  "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
-  "require_inference_benchmark": true
+  "restore_checkpoint_day": "20260731",
+  "train_start_day": "20260801",
+  "train_end_day": "20260906",
+  "need_test": false,
+  "need_auto_test": false,
+  "need_dump_serving_model": false,
+  "require_inference_benchmark": false
 }

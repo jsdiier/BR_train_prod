@@ -22,9 +22,11 @@ artifact contains neither the position variable nor a rank input.  The Serving
 input signature is unchanged.  Each saved checkpoint also writes
 `model/pal_position_bias_<day>.tsv` for mechanism auditing.
 
-The run is automation-enabled through `rolling_test.sh`; `common.conf` is
-locked to training `20260303-20260720`, fixed testing `20260721-20260724`, and
-rolling testing through `20260801`.
+The experiment is now automation-disabled and manual-only.  The dedicated
+`continue_to_20260906.sh` entry restores the existing `20260731` checkpoint,
+trains `20260801-20260906`, and produces checkpoints only.  It does not run
+fixed/rolling tests, export Serving, or upload a Serving artifact.  The normal
+`submit_luban.sh` submits this dedicated script to Luban.
 
 鲁班（EVE）平台 hash 特征排序模型训练代码，模型为 `br_model_hash_v2`（RankMixer + buy/cat/click/ext 四塔）。
 
