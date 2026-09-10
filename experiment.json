@@ -1,12 +1,26 @@
 {
-  "enabled": false,
-  "manual_only": true,
-  "baseline": "BR_train_prod_bs_lr_ema_weights",
+  "enabled": true,
+  "manual_only": false,
+  "rolling_enabled": true,
+  "batch_group": "baseline_remove_200_slot_20260910",
+  "baseline": "BR_train_prod_baseline_rerun_20260823",
+  "research_parent": "BR_train_prod_baseline",
+  "branch": "BR_train_prod_baseline_rerun_20260823",
   "train_start_day": "20260303",
-  "train_end_day": "20260720",
-  "test_start_day": "20260721",
-  "test_end_day": "20260724",
-  "auto_test_start_ckpt_day": "20260724",
-  "auto_test_end_day": "20260801",
-  "require_inference_benchmark": true
+  "train_end_day": "20260825",
+  "test_start_day": "20260826",
+  "test_end_day": "20260828",
+  "auto_test_start_ckpt_day": "20260828",
+  "auto_test_end_day": "20260905",
+  "initialization": "reuse_existing_checkpoint_20260825",
+  "change": "full_slot_control",
+  "expected_metric_rows": 36,
+  "allowed_missing_train_days": [],
+  "allowed_missing_test_days": [],
+  "require_inference_benchmark": true,
+  "data_readiness_gate": {
+    "hdfs_root": "hdfs://DClusterUS1/user/prod_soda_trade_strategy/rank/jiazhuo/hash_fea_new/train/",
+    "train_start_day": "20260303",
+    "rolling_test_end_day": "20260905"
+  }
 }
