@@ -1,0 +1,11 @@
+log/
+logs/
+model/
+models/
+*.log
+.DS_Store
+__pycache__/
+nohup.out
+serving_model_0/
+*.ckpt
+*.pb

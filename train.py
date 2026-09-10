@@ -15,8 +15,6 @@ from sklearn import metrics
 class Learner:
     def __init__(self):
         self.model = None
-        self.ema_vars = None
-        self.ema_decay = 0.999
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
@@ -37,9 +35,6 @@ class Learner:
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
     def _date_range(self, start, end):
@@ -63,7 +58,7 @@ class Learner:
                 files += tf.io.gfile.glob("%s/%s/part*" % (bp, day))
         return sorted(set(files))
 
-    def train(self, data_arg, start_day, end_day, model_path=None, data_path=None, dump_serving_model=True):
+    def train(self, data_arg, start_day, end_day, model_path=None, data_path=None):
         if self.model is None:
             self.model = Model(training=True)
         model = self.model
@@ -84,8 +79,18 @@ class Learner:
         shuffle_size = batch_size * 10
 
         #load ckpt (需要先跑一个 batch 建好变量再 restore)
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
-        if ckpt_path is not None:
+        # 优先级: 环境变量 CUSTOM_CHECKPOINT_PATH > model.done 文件
+        custom_ckpt = os.environ.get('CUSTOM_CHECKPOINT_PATH', None)
+        if custom_ckpt:
+            ckpt_path = custom_ckpt
+            print(f"[Checkpoint] Using custom checkpoint from CUSTOM_CHECKPOINT_PATH: {ckpt_path}")
+        else:
+            ckpt_path = self.get_model_checkpoint_from_file(model_conf.done_file_path)
+
+        # Saliency Map 阶段二跳过 checkpoint 加载（模型结构已变，不能加载阶段一的 ckpt）
+        _saliency_prune = os.environ.get('saliency_select_stage', '0') == '2'
+        skip_ckpt = _saliency_prune
+        if ckpt_path is not None and not skip_ckpt:
             print("load model from checkpoint:", ckpt_path)
             ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
 
@@ -101,25 +106,22 @@ class Learner:
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
             print("load checkpoint path: ", ckpt_path)
 
-        probe_files = self.get_day_files(data_arg, days[0])
-        probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
-                                     fetch_size=1, num_parallel=10)
-        first_batch = next(iter(probe_ds))
-        _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
-
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
-        out_dir = model_conf.local_model_dir
-        if not os.path.exists(out_dir):
-            try:
-                os.makedirs(out_dir)
-            except Exception:
-                pass
-        metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
         task_names = ['buy', 'cat', 'click', 'ext']
 
-        mfout = open(metric_path, 'a')
-        mfout.write('\t'.join(['day', 'task', 'n', 'auc', 'gauc', 'mae', 'pos_rate']) + '\n')
+        if model_conf.enable_eval:
+            out_dir = model_conf.local_model_dir
+            if not os.path.exists(out_dir):
+                try:
+                    os.makedirs(out_dir)
+                except Exception:
+                    pass
+            metric_path = os.path.join(out_dir, 'metrics_by_day.txt')
+            mfout = open(metric_path, 'a')
+            mfout.write('\t'.join(['day', 'task', 'n', 'auc', 'gauc', 'mae', 'pos_rate']) + '\n')
+        else:
+            mfout = None
+            print('eval metrics disabled (ENABLE_EVAL=0)')
 
         #多天累计统计:各任务正样本数 [buy, cat, click, ext] 和总样本数
         self.pos = np.zeros(len(task_names))
@@ -150,14 +152,19 @@ class Learner:
             if (idx + 1) % model_conf.ckpt_save_days == 0 or is_last:
                 self.save_checkpoint(day)
 
-        mfout.close()
-        print(datetime.datetime.now(), "metrics written to %s" % metric_path)
+        if mfout is not None:
+            mfout.close()
+            print(datetime.datetime.now(), "metrics written to %s" % metric_path)
 
-        #导出 serving 模型。滚动评估只需要 checkpoint，可显式关闭，避免每天重复导出。
-        if dump_serving_model:
-            self.set_training_mode(False, True)
-            self.dump_serving_model(end_day, 0)
-            self.set_training_mode(True, False)
+        # Saliency Map 阶段一: 收敛后将累积的梯度 L2 范数均值写出，供阶段二剪枝使用
+        if model_conf.use_saliency:
+            imp_path = "log/fea_importance_saliency_%s_%s.txt" % (start_day, end_day)
+            model.dump_saliency_importance(path=imp_path)
+
+        #导出 serving 模型
+        self.set_training_mode(False, True)
+        self.dump_serving_model(end_day, 0)
+        self.set_training_mode(True, False)
 
     def train_one_day(self, train_data, day, train_writer, mfout=None):
         model = self.model
@@ -179,7 +186,75 @@ class Learner:
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            if model_conf.use_saliency:
+                # Saliency Map 阶段一: 需要 tape 引用 pooled tensor 梯度，不能走 tf.function
+                # 使用 persistent=True 因为需要分别对权重和 pooled tensor 求梯度
+                with tf.GradientTape(persistent=True) as tape:
+                    ctcvr, cat_pred, click_pred, ext_pred = model(
+                        [feat['fea_ids'], feat['fea_vals']], training=True)
+
+                    loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), ctcvr)
+                    loss_cat = model.loss_bc(tf.expand_dims(feat['cat_label'], 1), cat_pred)
+                    loss_click = model.loss_bc(tf.expand_dims(feat['clk_label'], 1), click_pred)
+                    loss_ext = model.loss_bc(tf.expand_dims(feat['ext_label'], 1), ext_pred)
+
+                    main_loss = loss_buy + loss_cat + loss_click + loss_ext
+
+                    # 收集 pooled tensor 用于梯度计算（主表）
+                    _saliency_targets = []
+                    if model._last_pooled_main is not None:
+                        _saliency_targets.append(model._last_pooled_main)
+
+                    # 早期检测：前10步检查配置是否正确
+                    if step < 10:
+                        if not _saliency_targets:
+                            raise RuntimeError(
+                                f"[Saliency Map] step {step}: _saliency_targets 为空！\n"
+                                f"  use_saliency={model_conf.use_saliency}\n"
+                                f"  is_save_model={model.is_save_model}\n"
+                                f"  _last_pooled_main={model._last_pooled_main}\n"
+                                f"这将导致输出文件全是0，请检查 model.py 的 call() 方法"
+                            )
+
+                    # 对训练权重用 main_loss（绕过 stop_gradient）
+                    gradients = tape.gradient(main_loss, model.trainable_weights)
+                    if _saliency_targets:
+                        saliency_grads = tape.gradient(main_loss, _saliency_targets)
+                    del tape
+
+                model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
+
+                # 累积梯度 L2 范数（主表）
+                if _saliency_targets:
+                    g_main = saliency_grads[0] if isinstance(saliency_grads, list) else saliency_grads
+                    if g_main is not None:
+                        grad_norm = tf.reduce_mean(
+                            tf.norm(g_main, axis=-1), axis=0).numpy()
+                        model._saliency_grad_sum_main += grad_norm
+                        if step < 10:
+                            print(f"[Saliency] step {step}: g_main shape={g_main.shape}, "
+                                  f"norm_sum={np.sum(grad_norm):.6f}, "
+                                  f"norm_mean={np.mean(grad_norm):.6f}")
+                    else:
+                        if step < 10:
+                            raise RuntimeError(
+                                f"[Saliency Map] step {step}: g_main 为 None!\n"
+                                f"可能原因：\n"
+                                f"  1. pooled_for_grad 没有被 tape.watch()\n"
+                                f"  2. main_loss 到 pooled_for_grad 的梯度路径被切断\n"
+                                f"  3. stop_gradient 阻止了梯度回传"
+                            )
+                    model._saliency_cnt += 1
+
+                final_loss = main_loss
+                pred_buy = ctcvr
+                pred_cat = cat_pred
+                pred_click = click_pred
+                pred_ext = ext_pred
+            else:
+                # 正常训练路径: 使用 tf.function 编译加速
+                loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = \
+                    self.train_step(feat)
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -266,9 +341,6 @@ class Learner:
 
     def save_checkpoint(self, day):
         model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
@@ -292,9 +364,6 @@ class Learner:
             return
 
         train_model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, train_model.trainable_weights):
-                w.assign(ema_v)
 
         fid_keys, fid_values = train_model.fid_table.export()
         fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
@@ -380,10 +449,6 @@ if __name__ == "__main__":
     parse.add_argument('-data', type=str, help='input data files')
     parse.add_argument('-start_day', type=str, help='train start day')
     parse.add_argument('-end_day', type=str, help='train end day')
-    parse.add_argument('-checkpoint_path', type=str, default=None,
-                       help='explicit checkpoint directory; defaults to last entry in model.done')
-    parse.add_argument('-dump_serving_model', type=int, default=1,
-                       help='1: dump serving model after training; 0: checkpoint only')
 
     args = parse.parse_args()
     solver = Learner()
@@ -397,12 +462,21 @@ if __name__ == "__main__":
 
     # start training or testing
     if model_conf.train_mode == 'train':
+        # Saliency Map 阶段2：自动调整训练起始日期为从头开始
+        # 因为阶段2不加载checkpoint，需要从头训练完整周期才能公平对比
+        _saliency_stage = int(os.environ.get('saliency_select_stage', '0'))
+        if _saliency_stage == 2:
+            original_start_day = args.start_day
+            args.start_day = '20260303'  # 从头开始训练
+            print(f"[Saliency Map 阶段2] 自动调整训练起始日期:")
+            print(f"  原始 start_day: {original_start_day}")
+            print(f"  调整后 start_day: {args.start_day} (从头开始训练完整周期)")
+            print(f"  end_day 保持不变: {args.end_day}")
+
         #按天 for 循环读取数据并训练(数据读取放在 train() 内部,逐天进行)
         print('start training, day by day from %s to %s' % (args.start_day, args.end_day))
         start_time = time.time()
-        solver.train(args.data, model_path=args.checkpoint_path, data_path=args.data,
-                     start_day=args.start_day, end_day=args.end_day,
-                     dump_serving_model=bool(args.dump_serving_model))
+        solver.train(args.data, data_path=args.data, start_day=args.start_day, end_day=args.end_day)
         end_time2 = time.time()
         print('end training, using_time_training: ', end_time2 - start_time)
     else:

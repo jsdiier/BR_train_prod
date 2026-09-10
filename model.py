@@ -104,6 +104,19 @@ class Model(tf.keras.Model):
         # 初始化底层主网络
         self.rankmixer = RankMixer(t=16, token_dim=768, num_heads=16, num_experts=16, hidden_ratio=2,
                                    training=self.training)
+
+        # Saliency Map 阶段一: 累积 ∂loss/∂pooled_emb 的 L2 范数均值
+        # 只用主表 all_slot_ids 排序，ads 表梯度路径不同不作混排
+        self.use_saliency = model_conf.use_saliency
+        self.saliency_collect_mode = model_conf.saliency_collect_mode
+        if self.use_saliency:
+            self._saliency_grad_sum_main = np.zeros(len(model_conf.all_slot_ids), dtype=np.float64)
+            self._saliency_grad_sum_ads  = np.zeros(len(model_conf.slot_id_v2),   dtype=np.float64)
+            self._saliency_cnt = 0
+            # train.py 在 tape.gradient() 时通过这两个属性拿到 tensor 引用
+            self._last_pooled_main = None
+            self._last_pooled_ads  = None
+
         # 初始化序列网络
         self.seq_click_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_click_seq')
         self.seq_pay_attention_layer = DIN_attention_Layer([50, 20], 'sigmoid', name='global_pay_seq')
@@ -185,6 +198,54 @@ class Model(tf.keras.Model):
                     grad = grad_map.get(var.name)
                     if grad is not None:
                         tf.summary.histogram(safe_name + "_grad", grad, step=step)
+
+    def dump_saliency_importance(self, path=None):
+        """阶段一: 将训练过程中累积的 saliency 梯度 L2 范数均值写出到文件。
+
+        Saliency 定义: 对每个 batch 计算 ∂loss/∂pooled_emb，
+        取每个 slot 维度上梯度向量的 L2 范数均值，作为该 slot 对预测目标的贡献度。
+        值越大表示该 slot 越重要；升序排列（最不重要在前）。
+
+        注意: 只用主表 all_slot_ids 排序，不参与跨表混排。
+        ads 表(slot_id_v2)归一化基准和主表不同，且梯度回传路径不同（主要经过 DIN attention），
+        避免基准不一致导致的偏差，与源码保持一致。
+
+        文件格式（每行）: slot_id\tavg_saliency_grad_norm
+        """
+        if not self.use_saliency:
+            print("[dump_saliency_importance] use_saliency=False, skip")
+            return []
+        if self._saliency_cnt == 0:
+            print("[dump_saliency_importance] no saliency grads accumulated, skip")
+            return []
+
+        # 只用主表，同一梯度基准内排序，结果可靠
+        avg_main = self._saliency_grad_sum_main / self._saliency_cnt  # [F_main]
+
+        ranked = sorted(
+            [(int(model_conf.all_slot_ids[i]), float(avg_main[i]))
+             for i in range(len(model_conf.all_slot_ids))],
+            key=lambda kv: kv[1]   # 升序: 最不重要在前
+        )
+
+        if path is None:
+            path = model_conf.saliency_importance_file
+
+        import os as _os
+        out_dir = _os.path.dirname(path)
+        if out_dir and not _os.path.exists(out_dir):
+            _os.makedirs(out_dir)
+
+        with open(path, 'w') as f:
+            f.write("# slot_id\tavg_saliency_grad_norm  (ascending: least important first, main table only)\n")
+            for sid, w in ranked:
+                f.write("%d\t%.8f\n" % (sid, w))
+
+        print("[dump_saliency_importance] wrote %d slots (main table only) -> %s" % (len(ranked), path))
+        print("[dump_saliency_importance] least-important top%d: %s" % (
+            model_conf.saliency_prune_num,
+            [s for s, _ in ranked[:model_conf.saliency_prune_num]]))
+        return ranked
 
     def transform(self, sids, fids):
         # # 调试打印：查看原始输入数据的形状
@@ -454,6 +515,10 @@ class Model(tf.keras.Model):
 
         pooled_output, slot_mask = self.process_and_pool_fused(sid_list, fid_list)
 
+        # Saliency Map 阶段一: 保存 pooled tensor 引用用于梯度计算（只用主表）
+        if self.use_saliency and not self.is_save_model:
+            self._last_pooled_main = pooled_output
+
         # lr part
         lr_indices = self.slot_id_table.lookup(tf.constant(model_conf.lr_slot_ids, dtype=tf.dtypes.int32))
         lr_emb = tf.gather(pooled_output[:, :, 0], lr_indices, axis=1)
@@ -465,18 +530,12 @@ class Model(tf.keras.Model):
         sum_square_fm_embedding = tf.reduce_sum(tf.math.square(full_emb), 1)
         fm = 0.5 * tf.math.subtract(square_sum_fm_embedding, sum_square_fm_embedding)
 
-        # #embedding part
-        # emb_slot_indices = self.slot_id_table.lookup(tf.constant(model_conf.embedding_slot_ids, dtype=tf.dtypes.int32))
-        # all_emb = tf.gather(pooled_output, emb_slot_indices, axis=1)
-        # all_emb = tf.reshape(all_emb, [tf.shape(all_emb)[0], -1])
-
         # 获取user_emb
         emb_user_indices = self.slot_id_table.lookup(tf.constant(model_conf.user_fea_list, dtype=tf.dtypes.int32))
         emb_user = tf.gather(pooled_output[:, :, 1:], emb_user_indices, axis=1)
         emb_user = tf.reshape(
             emb_user,
             [tf.shape(emb_user)[0], len(model_conf.user_fea_list) * model_conf.fm_emb_size])
-        logger.info("emb_user shape is {}".format(emb_user.shape))
 
         # 获取shop_emb
         emb_shop_indices = self.slot_id_table.lookup(tf.constant(model_conf.shop_fea_list, dtype=tf.dtypes.int32))
@@ -484,7 +543,6 @@ class Model(tf.keras.Model):
         emb_shop = tf.reshape(
             emb_shop,
             [tf.shape(emb_shop)[0], len(model_conf.shop_fea_list) * model_conf.fm_emb_size])
-        logger.info("emb_shop shape is {}".format(emb_shop.shape))
 
         # 获取interact_emb
         emb_interact_indices = self.slot_id_table.lookup(
@@ -493,7 +551,6 @@ class Model(tf.keras.Model):
         emb_interact = tf.reshape(
             emb_interact,
             [tf.shape(emb_interact)[0], len(model_conf.interact_fea_list) * model_conf.fm_emb_size])
-        logger.info("emb_interact shape is {}".format(emb_interact.shape))
 
         # 获取sequence_emb
 
@@ -504,11 +561,6 @@ class Model(tf.keras.Model):
         global_query_input = tf.reshape(
             global_query_input,
             [tf.shape(global_query_input)[0], len(model_conf.global_seq_query_sids) * model_conf.fm_emb_size])
-
-        # pooled_output_v2, slot_mask_v2 = self.process_and_pool_fused(sid_list, fid_list, table_type='din_ads_table')
-        # ads_slot_indices = self.slot_id_table_din_ads.lookup(tf.constant(model_conf.ads_fea_slots, dtype=tf.dtypes.int32))
-        # ads_emb = tf.gather(pooled_output_v2, ads_slot_indices, axis=1)
-        # ads_emb = tf.reshape(ads_emb, [tf.shape(ads_emb)[0], -1])
 
         seq_outputs = []
         for seq_name, seq_sid_ids in model_conf.seq_slot_dict.items():

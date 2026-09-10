@@ -38,7 +38,7 @@ class Learner:
         model = self.model
 
         #load ckpt
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
+        ckpt_path = self.get_model_checkpoint_from_file(model_conf.done_file_path)
         #ckpt_path="model/checkpoints/20260430_0/"
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
@@ -61,82 +61,8 @@ class Learner:
         ext_weight = 1.0
         print('testing...')
         self.set_training_mode(False)
-        self.benchmark_inference(train_data)
-        self.test(train_data, model_path=ckpt_path or '')
+        self.test(train_data)
         self.set_training_mode(True)
-
-    @staticmethod
-    def _sync_outputs(outputs):
-        """Wait for all GPU outputs while copying only one scalar to the host."""
-        sync_value = tf.add_n([tf.reduce_sum(output) for output in outputs])
-        return sync_value.numpy()
-
-    @staticmethod
-    def _latency_percentile(latencies, percentile):
-        return float(np.percentile(np.asarray(latencies, dtype=np.float64), percentile))
-
-    def benchmark_inference(self, test_data):
-        warmup_batches = model_conf.inference_benchmark_warmup_batches
-        measure_batches = model_conf.inference_benchmark_measure_batches
-        expected_batch_size = model_conf.batch_size
-        iterator = iter(test_data)
-
-        warmed = 0
-        while warmed < warmup_batches:
-            try:
-                feat = next(iterator)
-            except StopIteration:
-                break
-            if int(feat['cvr_label'].shape[0]) != expected_batch_size:
-                continue
-            outputs = self.model([feat['fea_ids'], feat['fea_vals']])
-            self._sync_outputs(outputs)
-            warmed += 1
-
-        model_latencies = []
-        end_to_end_latencies = []
-        measured_samples = 0
-        while len(model_latencies) < measure_batches:
-            end_to_end_start = time.perf_counter()
-            try:
-                feat = next(iterator)
-            except StopIteration:
-                break
-            batch_size = int(feat['cvr_label'].shape[0])
-            if batch_size != expected_batch_size:
-                continue
-
-            model_start = time.perf_counter()
-            outputs = self.model([feat['fea_ids'], feat['fea_vals']])
-            self._sync_outputs(outputs)
-            model_latencies.append(time.perf_counter() - model_start)
-
-            # Mirror the offline evaluator's host conversion without AUC aggregation.
-            for output in outputs:
-                output.numpy()
-            end_to_end_latencies.append(time.perf_counter() - end_to_end_start)
-            measured_samples += batch_size
-
-        if not model_latencies:
-            print('[INFERENCE_BENCHMARK] skipped: no complete batch available')
-            return
-
-        model_total = sum(model_latencies)
-        e2e_total = sum(end_to_end_latencies)
-        device = tf.test.gpu_device_name() or 'CPU'
-        print('[INFERENCE_BENCHMARK] device:%s batch_size:%d warmup_batches:%d measure_batches:%d samples:%d' % (
-            device, expected_batch_size, warmed, len(model_latencies), measured_samples))
-        print('[INFERENCE_BENCHMARK] model throughput_samples_s:%.3f latency_ms_sample:%.6f '
-              'batch_latency_p50_ms:%.3f batch_latency_p95_ms:%.3f' % (
-                  measured_samples / model_total,
-                  model_total * 1000.0 / measured_samples,
-                  self._latency_percentile(model_latencies, 50) * 1000.0,
-                  self._latency_percentile(model_latencies, 95) * 1000.0))
-        print('[INFERENCE_BENCHMARK] end_to_end throughput_samples_s:%.3f '
-              'batch_latency_p50_ms:%.3f batch_latency_p95_ms:%.3f' % (
-                  measured_samples / e2e_total,
-                  self._latency_percentile(end_to_end_latencies, 50) * 1000.0,
-                  self._latency_percentile(end_to_end_latencies, 95) * 1000.0))
 
     def test(self, test_data, model_path='', ):
         res_buy = []
@@ -260,7 +186,7 @@ class Learner:
             if len(parts) >= 2:
                 ckpt_day = parts[0]
                 ckpt_path = parts[1]
-                print("load model checkpoint_path=%s, checkpoint_day=%s" % (ckpt_path, ckpt_day))
+                print("load model checkpoint_path=%s, checkpoint_day=%s",ckpt_path, ckpt_day)
                 return ckpt_path
             else:
                 print("model.done last line format error")
@@ -272,8 +198,6 @@ if __name__ == "__main__":
     parse.add_argument('-data', type=str, help='input data files')
     parse.add_argument('-start_day', type=str, help='train start day')
     parse.add_argument('-end_day', type=str, help='train end day')
-    parse.add_argument('-checkpoint_path', type=str, default=None,
-                       help='explicit checkpoint directory; defaults to last entry in model.done')
 
     args = parse.parse_args()
     solver = Learner()
@@ -303,7 +227,7 @@ if __name__ == "__main__":
 
         #start training
         print('start training')
-        solver.train(ds, model_path=args.checkpoint_path, data_path=args.data)
+        solver.train(ds, data_path=args.data)
         end_time2 = time.time()
         using_time2 = end_time2 - end_time
         print('end training, using_time_training: ', using_time2)
