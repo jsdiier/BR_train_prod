@@ -1,6 +1,6 @@
 {
-  "enabled": true,
-  "manual_only": false,
+  "enabled": false,
+  "manual_only": true,
   "rolling_enabled": true,
   "batch_group": "jz_v3_3source_attribution_20260908",
   "baseline": "BR_train_EMA_lr_bs_baseline",
