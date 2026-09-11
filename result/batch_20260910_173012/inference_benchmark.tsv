@@ -1,0 +1,3 @@
+experiment	device	batch_size	warmup_batches	measure_batches	samples	model_throughput	model_latency_sample	model_p50	model_p95	e2e_throughput	e2e_p50	e2e_p95	log_path
+BR_train_prod_baseline_rerun_20260823	/device:GPU:0	512	20	100	51200	1248.087	0.801226	404.005	433.284	1161.999	434.428	469.217	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_baseline_rerun_20260823/log/rolling_test_ckpt_20260825_from_20260826_to_20260828_202609101743
+BR_train_prod_baseline_remove_200_slot	/device:GPU:0	512	20	100	51200	1556.975	0.642271	324.621	354.387	1398.546	364.294	392.673	/home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_baseline_remove_200_slot/log/rolling_test_ckpt_20260825_from_20260826_to_20260828_202609110919

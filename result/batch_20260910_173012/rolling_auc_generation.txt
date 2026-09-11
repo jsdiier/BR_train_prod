@@ -1,0 +1,4 @@
+[WARN] BR_train_prod_baseline_remove_200_slot date/task keys differ from baseline
+[INFO] BR_train_prod_baseline_rerun_20260823: 72 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_baseline_rerun_20260823/model/rolling_metrics.tsv
+[INFO] BR_train_prod_baseline_remove_200_slot: 36 rolling metric rows <- /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/BR_train_prod_baseline_remove_200_slot/model/rolling_metrics.tsv
+[INFO] wrote self-contained HTML: /home/luban/rank-ssl/chenpinyuan/tf_rank_BR_prod/shared_tools/result/batch_20260910_173012/rolling_auc.html
