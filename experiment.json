@@ -1,6 +1,6 @@
 {
-  "enabled": true,
-  "manual_only": false,
+  "enabled": false,
+  "manual_only": true,
   "rolling_enabled": true,
   "batch_group": "baseline_remove_200_slot_20260910",
   "baseline": "BR_train_prod_baseline_rerun_20260823",
