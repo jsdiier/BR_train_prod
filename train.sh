@@ -8,15 +8,38 @@ set -x
 set -e
 
 CONF_FILE=./common.conf
-ckpt_day=$train_end_day
 : ${is_auto_train:=0}
 if [ $is_auto_train -eq 1 ];then
+    DONE_FILE="./model/model.done"
+    if [[ ! -s "$DONE_FILE" ]]; then
+        echo "model.done is missing or empty: $DONE_FILE"
+        exit 1
+    fi
+
+    last_model_line=$(awk 'NF >= 2 { line = $0 } END { print line }' "$DONE_FILE")
+    ckpt_day=$(echo "$last_model_line" | awk '{print $1}')
+    ckpt_path=$(echo "$last_model_line" | awk '{print $2}')
+    if [[ ! "$ckpt_day" =~ ^[0-9]{8}$ || -z "$ckpt_path" ]]; then
+        echo "invalid model.done last line: $last_model_line"
+        exit 1
+    fi
+
+    if [[ "$ckpt_path" = /* ]]; then
+        local_ckpt_path="$ckpt_path"
+    else
+        local_ckpt_path="./${ckpt_path#./}"
+    fi
+    if [[ ! -d "$local_ckpt_path" ]]; then
+        echo "checkpoint from model.done does not exist: $local_ckpt_path"
+        exit 1
+    fi
+
     current_date=$(date +%Y%m%d)
     temp_date="$current_date"
     max_days=20
     found=0
     eday=""
-    bday=$(date -d "$train_end_day +1 day" +%Y%m%d)
+    bday=$(date -d "$ckpt_day +1 day" +%Y%m%d)
     count=0
 
     while [[ "$temp_date" -ge "$bday" ]]; do
@@ -47,13 +70,19 @@ if [ $is_auto_train -eq 1 ];then
         exit 1
     fi
 
-    if [[ ! -d "./model/checkpoints/${ckpt_day}" ]]; then
-        echo "ckpt dir not exist"
-        exit 1
-    fi
+    check_day="$bday"
+    while [[ "$check_day" -le "$eday" ]]; do
+        done_file_path=${train_hdfs_dir}/${check_day}"/_SUCCESS"
+        if ! $hadoop fs -test -e "$done_file_path"; then
+            echo "training data day is incomplete: $done_file_path"
+            exit 1
+        fi
+        check_day=$(date -d "$check_day +1 day" +%Y%m%d)
+    done
 
     train_start_day=$bday
     train_end_day=$eday
+    echo "AUTO_TRAIN_RANGE checkpoint_day=$ckpt_day start_day=$bday end_day=$eday"
 fi
 
 exec 1>"./log/train_log_${train_end_day}_$nowt" 2>&1
