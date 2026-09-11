@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import datetime as dt
 import html
 import json
 import os
@@ -18,14 +19,73 @@ def resolve_experiment(exp, base_dir):
     return exp if os.path.isabs(exp) else os.path.join(base_dir, exp)
 
 
+def next_day(day):
+    value = dt.datetime.strptime(day, "%Y%m%d").date()
+    return (value + dt.timedelta(days=1)).strftime("%Y%m%d")
+
+
+def configured_windows(exp_dir):
+    """Return the exact fixed/rolling metric windows declared by this experiment.
+
+    ``rolling_metrics.tsv`` is append-only in several legacy experiment folders.
+    Reading it without this contract would mix prior evaluation windows into a new
+    batch report.  The experiment configuration is the source of truth.
+    """
+    config_path = os.path.join(exp_dir, "experiment.json")
+    with open(config_path, "r", encoding="utf-8") as handle:
+        config = json.load(handle)
+
+    required = ("train_end_day", "test_start_day", "test_end_day")
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise ValueError("missing evaluation-window config in %s: %s" % (
+            config_path, ",".join(missing)))
+
+    windows = {(
+        config["train_end_day"],
+        config["test_start_day"],
+        config["test_end_day"],
+    )}
+
+    if config.get("rolling_enabled", True) is False:
+        return windows
+
+    required = ("auto_test_start_ckpt_day", "auto_test_end_day")
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise ValueError("missing rolling-window config in %s: %s" % (
+            config_path, ",".join(missing)))
+
+    missing_test_days = set(config.get("allowed_missing_test_days", []))
+    checkpoint_day = config["auto_test_start_ckpt_day"]
+    test_day = next_day(checkpoint_day)
+    end_day = config["auto_test_end_day"]
+
+    while test_day <= end_day:
+        if test_day not in missing_test_days:
+            windows.add((checkpoint_day, test_day, test_day))
+        checkpoint_day = test_day
+        test_day = next_day(test_day)
+
+    return windows
+
+
 def load_metrics(exp, base_dir):
     exp_dir = resolve_experiment(exp, base_dir)
     path = os.path.join(exp_dir, "model", "rolling_metrics.tsv")
     if not os.path.isfile(path):
         raise FileNotFoundError("rolling metrics not found: %s" % path)
+
+    allowed_windows = configured_windows(exp_dir)
     rows = {}
+    skipped = 0
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
+            window = (row["checkpoint_day"], row["test_start_day"],
+                      row["test_end_day"])
+            if window not in allowed_windows:
+                skipped += 1
+                continue
             key = (row["test_end_day"], row["task"])
             rows[key] = {
                 "checkpoint_day": row["checkpoint_day"],
@@ -38,7 +98,7 @@ def load_metrics(exp, base_dir):
             }
     if not rows:
         raise ValueError("no fixed-window or rolling rows in %s" % path)
-    return os.path.basename(exp_dir.rstrip(os.sep)), path, rows
+    return os.path.basename(exp_dir.rstrip(os.sep)), path, rows, skipped
 
 
 def validate_alignment(data):
@@ -147,11 +207,12 @@ def main():
 
     data, sources = {}, []
     for exp in [args.baseline] + args.experiments:
-        name, path, rows = load_metrics(exp, args.base_dir)
+        name, path, rows, skipped = load_metrics(exp, args.base_dir)
         if name in data:
             parser.error("duplicate experiment name: %s" % name)
         data[name], sources = rows, sources + [path]
-        print("[INFO] %s: %d rolling metric rows <- %s" % (name, len(rows), path))
+        print("[INFO] %s: %d in-window metric rows, %d historical rows filtered <- %s" % (
+            name, len(rows), skipped, path))
     errors = validate_alignment(data)
     for error in errors:
         print("[WARN] " + error, file=sys.stderr)

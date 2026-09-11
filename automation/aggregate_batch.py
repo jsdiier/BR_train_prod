@@ -1,13 +1,43 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import datetime as dt
 import json
 import os
-import shutil
 import subprocess
 import sys
 
 from common import atomic_json, load_json, now
+
+
+def next_day(day):
+    value = dt.datetime.strptime(day, "%Y%m%d").date()
+    return (value + dt.timedelta(days=1)).strftime("%Y%m%d")
+
+
+def configured_windows(exp_dir):
+    """Evaluation windows declared by the experiment, not historical TSV rows."""
+    with open(os.path.join(exp_dir, "experiment.json"), encoding="utf-8") as handle:
+        config = json.load(handle)
+
+    windows = {(
+        config["train_end_day"],
+        config["test_start_day"],
+        config["test_end_day"],
+    )}
+    if config.get("rolling_enabled", True) is False:
+        return windows
+
+    missing_test_days = set(config.get("allowed_missing_test_days", []))
+    checkpoint_day = config["auto_test_start_ckpt_day"]
+    test_day = next_day(checkpoint_day)
+    end_day = config["auto_test_end_day"]
+    while test_day <= end_day:
+        if test_day not in missing_test_days:
+            windows.add((checkpoint_day, test_day, test_day))
+        checkpoint_day = test_day
+        test_day = next_day(test_day)
+    return windows
 
 
 def write_structured_metrics(base_dir, baseline, states, out, test_end_day):
@@ -47,10 +77,25 @@ def write_combined_rolling(base_dir, baseline, states, out):
         source = os.path.join(exp_dir, "model", "rolling_metrics.tsv")
         if not os.path.isfile(source):
             continue
+        allowed_windows = configured_windows(exp_dir)
+        selected_rows = []
         with open(source, "r", encoding="utf-8", errors="replace") as handle:
             for row in csv.DictReader(handle, delimiter="\t"):
-                rows.append({"experiment": branch, **row})
-        shutil.copy2(source, os.path.join(out, branch + "_rolling_metrics.tsv"))
+                window = (row["checkpoint_day"], row["test_start_day"],
+                          row["test_end_day"])
+                if window in allowed_windows:
+                    selected_rows.append(row)
+                    rows.append({"experiment": branch, **row})
+
+        # Persist the exact batch-scoped snapshot, rather than an append-only
+        # experiment TSV that may also contain prior research windows.
+        fields = ["checkpoint_day", "test_start_day", "test_end_day", "task",
+                  "auc", "gauc", "uauc", "size", "pos", "log_path"]
+        with open(os.path.join(out, branch + "_rolling_metrics.tsv"),
+                  "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fields, delimiter="\t", extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(selected_rows)
     if rows:
         fields = ["experiment", "checkpoint_day", "test_start_day", "test_end_day", "task",
                   "auc", "gauc", "uauc", "size", "pos", "log_path"]
