@@ -1,0 +1,1520 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# 任务类型: py_spark
+#********************************************************************#
+#********************************************************************#
+import sys
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+from pyspark.sql.functions import udf
+from pyspark.sql import functions as F
+from pyspark import StorageLevel
+from pyspark.sql.types import *
+import os
+from pyspark.sql.functions import explode, col
+from pyspark.sql.functions import pandas_udf
+from pyspark.sql.functions import PandasUDFType
+import subprocess
+import random
+import json
+import hashlib
+import time
+from datetime import datetime, timedelta
+from pyspark.sql import SparkSession
+
+spark = (
+    SparkSession.builder
+    .appName("hash_fea_new_br_100seq")
+    .enableHiveSupport()
+    .getOrCreate()
+)
+
+sc = spark.sparkContext
+
+HDFS_NS = "hdfs://DClusterUS1"
+
+# 与 EVE 基线保持一致：仅 BUY 主标签为 0 的样本参与伯努利抽样。
+BASELINE_POS_RATE = 0.0032
+BASELINE_RATE = 5.0
+BASELINE_NEGATIVE_SAMPLE_RATE = (
+    BASELINE_POS_RATE / (1.0 - BASELINE_POS_RATE) * BASELINE_RATE
+)
+
+# 随机抽样已前移到 LEFT JOIN 之前；PreProcess 只负责原有的标签修正和
+# 可选的 slot 过滤/归一化，严禁在 fea_extract 后再次抽样。
+PREPROCESS_CONFIG = {
+    'enable_sample': False,
+    'negative_sample_rate': BASELINE_NEGATIVE_SAMPLE_RATE,
+    'enable_fea_filt': False,    # 是否过滤 slot
+    'filt_slot_set': set(),      # 需过滤的 slot 集合，如 {100, 101}
+    'enable_zscore': False,      # 是否 z-score 归一化
+    'zs_dic': {},                # {slot: (mean, std), ...}
+}
+
+
+class PreProcess:
+    """特征预处理：负采样、slot 过滤、z-score 归一化。"""
+
+    def __init__(
+        self,
+        is_test=False,
+        enable_sample=True,
+        negative_sample_rate=BASELINE_NEGATIVE_SAMPLE_RATE,
+        enable_fea_filt=False,
+        filt_slot_set=None,
+        enable_zscore=False,
+        zs_dic=None,
+    ):
+        self.is_test = is_test
+        self.enable_sample = enable_sample
+        self.negative_sample_rate = float(negative_sample_rate)
+
+        if not 0.0 <= self.negative_sample_rate <= 1.0:
+            raise ValueError(
+                "negative_sample_rate must be in [0, 1], actual=%s"
+                % self.negative_sample_rate
+            )
+
+        self.need_filt_slot = enable_fea_filt and bool(filt_slot_set)
+        self.need_normalize = enable_zscore and bool(zs_dic)
+        self.filt_slot_set = filt_slot_set or set()
+        self.zs_dic = zs_dic or {}
+        # 保留 r 属性，兼容审计输出；本任务中 enable_sample 必须为 False。
+        self.r = self.negative_sample_rate if self.enable_sample else 0.0
+
+    def neg_samplling(self, rate):
+        return random.random() <= rate
+
+    def normal(self, slot, val, zs_dic):
+        if slot in zs_dic:
+            mean, std = zs_dic[slot]
+            return (val - mean) / std
+        return val
+
+    def _transform_features(self, lis):
+        out_lis = [lis[0]]
+        for i in range(1, len(lis)):
+            li = lis[i].split(':')
+            if len(li) != 2:
+                out_lis.append(lis[i])
+                continue
+            slot = int(li[0])
+            val = float(li[1])
+            if self.need_normalize:
+                val = self.normal(slot, val, self.zs_dic)
+            if self.need_filt_slot and slot in self.filt_slot_set:
+                continue
+            out_lis.append('%s:%s' % (slot, val))
+        return ' '.join(out_lis)
+
+    def parse_line(self, line0):
+        splits = line0.split('#', 1)
+        if len(splits) < 2:
+            return None
+        line = splits[0].strip()
+        add_i = splits[1].strip()
+        if line == '':
+            return None
+
+        lis = line.split(' ')
+        label = lis[0]
+        add_info = add_i.split('\t')
+
+        if len(add_info) < 24:
+            raise ValueError(
+                "add_info requires at least 24 columns, actual=%d"
+                % len(add_info)
+            )
+
+        if self.is_test:
+            return str(line) + '#' + str(add_i)
+
+        uid = add_info[5]
+        is_clk_label = add_info[8]
+        is_cat_label = add_info[9]
+        u_nearby_imp_cnt = int(add_info[13])
+        is_ext_cov = int(add_info[15])
+
+        u_req_time = add_info[21]
+        if u_req_time is not None and u_req_time != '\\N':
+            u_req_time = int(u_req_time)
+        else:
+            u_req_time = 0
+
+        pay_timestamp = add_info[22]
+        if pay_timestamp is not None and pay_timestamp != '\\N':
+            pay_timestamp = int(pay_timestamp)
+        else:
+            pay_timestamp = 0
+
+        diff_time = 0
+        if pay_timestamp > 0 and u_req_time > 0:
+            diff_time = pay_timestamp - u_req_time
+
+        add_list = add_info[:15]
+        if u_nearby_imp_cnt > 1000 and uid != '0':
+            return None
+
+        is_ext_label = '0'
+        if is_ext_cov == 1 and diff_time >= 0:
+            is_ext_label = '1'
+
+        add_list.append(is_ext_label)
+        add_list.extend(add_info[16:])
+        add_i = '\t'.join(add_list)
+
+        if self.enable_sample:
+            raise RuntimeError(
+                "sampling must run before preference LEFT JOIN; "
+                "post-extract sampling would sample negatives twice"
+            )
+
+        if not self.need_filt_slot and not self.need_normalize:
+            return line + '#' + add_i
+        return self._transform_features(lis) + '#' + add_i
+
+#hdfs_file='/user/prod_soda_trade_strategy/dongjialiang/nearby_shitu/CO/'+dt
+
+# 勿在模块顶层创建 SparkSession / addFile，否则 executor 反序列化本模块时会再次执行并报错：
+# RuntimeError: SparkContext should only be created and accessed on the driver.
+DRIVER_FILES = """
+/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_br_100seq/feature_list.conf
+/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_br_100seq/fea_extract
+/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_br_100seq/parse.conf
+/user/prod_soda_trade_strategy/rank/chenpinyuan/hash_fea_new_br_100seq/resource.conf
+"""
+
+
+def _add_driver_files(sc):
+    for f in DRIVER_FILES.split("\n"):
+        f = f.strip()
+        if len(f) < 10:
+            continue
+        addfile = HDFS_NS + f
+        print("addfile:", addfile)
+        sc.addFile(addfile)
+
+fea_cols_str="traceid,is_cov,is_clk,rank,label,u_req_time,abid,u_lng,u_lat,s_ppcvr2,shop_ctr_all,s_ppcvr4,s_repeated_rate,s_kdj,item_price_avg,s_d_price,shop_avg_order_price,shop_complete_order,s_ra,s_rn,s7_ra,s7_rn,np_pv,np_ck,np_od,s_pv,s_ck,s_od,os_type,u_new,wl_pay,wl_pre_fee,b_logoimg,b_headimg,data_type,s_ic,s_ir,s_fstar,s_srate,s_real_m_orders,s_eta,s_eta_t,s_rdis,s_rdis_t,s_dcos,s_dcos_t,sp_cnt,sp_max_per,sp_max_pri,b_freed,fd_free,fd_thr_0,fd_lim_0,cut_1,fil_1,cut_2,fil_2,cut_3,fil_3,bg_cnt,bg_b_0,bg_g_0,bg_d_0,bg_b_1,bg_g_1,bg_d_1,bg_b_2,bg_g_2,bg_d_2,u_fea_new,us_fea,ifood_level,ifood_is_star,ifood_is_g_delievry,ifood_fee,ifood_user_rating_count,ifood_minimum_order_value,ifood_price_range,g_fea,req_hour,s_period,week,s_bizStatus,s_svr_s,s_del_s,en_order,s_ka,s_rank,us_fea_h,u_fea_h_new,u_s_rb_clk,u_s_rb_exp,u_s_rb_order,us_cp_amt_0,us_cp_amt_1,us_cp_amt_2,us_cp_amt_3,us_cp_amt_4,us_cp_dis_0,us_cp_dis_1,us_cp_dis_2,us_cp_dis_3,us_cp_dis_4,us_cp_max_0,us_cp_max_1,us_cp_max_2,us_cp_max_3,us_cp_max_4,us_cp_min_0,us_cp_min_1,us_cp_min_2,us_cp_min_3,us_cp_min_4,s_ori_dcos,s_brand,s_tags,m_tags,ms_tags,cuis_tags,shop_wordlist,shop_keyword,shop_cate_wordlist,s_categoryL3Tags,s_cuisL3Tags,wl_status,ucp_n,ucp_dis_0,ucp_dis_lim_0,ucp_dis_1,ucp_dis_lim_1,ucp_dis_2,ucp_dis_lim_2,u_type,pas_act_tag,s_id,city_id,cmd,gg_rn,gg_rs,s_stat_h,s_deliverType,u_sess,his_s_0,his_s_1,his_s_2,his_t_0,his_t_1,his_t_2,u_hisOrdCnt,u_history_order,s_preferShopScore,s_order_score,s_is_ordered,s_snum,rt_nb,s0_tags,s1_tags,s2_tags,up_app_ka,u_clk_sess,u_pay_sess,gs_fea,u_app_tags,up_hd,up_s_brand,s0_brand,s1_brand,s2_brand,s0_cuistags,s1_cuistags,s2_cuistags,u_12h_click_cate,u_12h_order,u_12h_es_brands,u_12h_od_brands,u_12h_es_cuisTagPerferScore,u_12h_es_tagPerferScore,u_12h_od_cuisTagPerferScore,u_12h_od_tagPerferScore,u_s_12h_act,ucp_reb_0,ucp_reb_1,ucp_reb_2,u_his_brands,u_his_categoryTags,u_his_cuisTags,up_m_tag_d60_top1,up_m_tag_d60_top2,up_m_tag_d60_top3,up_m_tag_d30_top1,up_m_tag_d30_top2,up_m_tag_d30_top3,up_m_tag_d7_top1,up_m_tag_d7_top2,up_m_tag_d7_top3,u_act_d30_o,u_act_d30_bg_o,u_act_d30_sp_o,u_act_d30_fd_o,u_act_d30_s,u_act_d30_bg_s,u_act_d30_sp_s,u_act_d30_fd_s,u_act_d30_p_cp_s,u_act_d30_gmv,u_act_d30_ted,u_act_d30_d_pri,u_act_d30_bg_pri,u_act_d30_fd_pri,u_act_d30_p_cp_pri,d30_order_seg,d60_u_w_act,up_w_ka,up_w_tag_top,u_w_price,u_app_act,u_app_price,up_app_tag_top,up_s_score_car,up_s_score_w0,up_s_score_w1,search_long_pay_shop_seq,search_long_clk_shop_seq,search_long_query_catel3_seq,pay_time_gap_sideinfo_seq,pay_shop_catel3_sideinfo_seq,pay_shop_pay_cnt_sideinfo_seq,clk_time_gap_sideinfo_seq,clk_shop_catel3_sideinfo_seq,clk_shop_clk_cnt_sideinfo_seq,query_time_gap_sideinfo_seq,query_weight_sideinfo_seq,u_g_code,s_g_code,is_ad,rt_nb_ts,u_c_spend,u_p_act,u_p_price,u_s_rb_cart,up_s_score_food,up_m_tag_d60_top1_p0,up_m_tag_d60_top1_p1,up_m_tag_d60_top1_p2,up_m_tag_d60_top1_p3,up_m_tag_d60_top1_p4,up_m_tag_d60_top1_p5,up_m_tag_d60_top1_p6,up_s_score_p0,up_s_score_p1,up_s_score_p2,up_s_score_p3,up_s_score_p4,up_s_score_p5,up_s_score_p6,u_act_d30_rd_o, u_act_d30_rd_s, u_act_d30_rd_pri,u_act_d30_s_cp_pri,s_comp_score,u_id,recid,is_cat,u_nearby_imp_cnt,u_nearby_cvr,is_ext_cov,u_ext_cvr,ext_label,trace_imp_cnt,is_ext_clk,is_ext_cat,pay_timestamp,module"
+NEW_PREFERENCE_FIELDS = [
+    "pay_shop_id_list",
+    "click_shop_id_list",
+    "addcart_shop_id_list",
+    "pay_top1_shop_id",
+    "pay_top2_shop_id",
+    "pay_top3_shop_id",
+    "pay_top1_category_l3_tag",
+    "pay_top2_category_l3_tag",
+    "pay_top3_category_l3_tag",
+    "pay_top1_category_l2_tag",
+    "pay_top1_cuisine_l2_tag",
+    "pay_top2_cuisine_l2_tag",
+    "pay_top1_cuisine_l1_tag",
+]
+SEQUENCE_FIELDS = [
+    "pay_shop_id_list",
+    "click_shop_id_list",
+    "addcart_shop_id_list",
+]
+SHOP_ID_FIELDS = [
+    "pay_top1_shop_id",
+    "pay_top2_shop_id",
+    "pay_top3_shop_id",
+]
+TAG_FIELDS = [
+    field_name
+    for field_name in NEW_PREFERENCE_FIELDS
+    if field_name not in SEQUENCE_FIELDS + SHOP_ID_FIELDS
+]
+
+BASE_FEATURE_FIELDS = [
+    column.strip()
+    for column in fea_cols_str.split(",")
+    if column.strip()
+]
+if len(BASE_FEATURE_FIELDS) != 273:
+    raise ValueError(
+        "baseline feature count mismatch: expected=273 actual=%d"
+        % len(BASE_FEATURE_FIELDS)
+    )
+
+# 保留基线原来的最后一列作为物理行尾，避免某个新增字符串特征为空时
+# 为了补齐 TSV 列数而被错误地填成可哈希的字符串 "0"。
+fea_cols_str = ",".join(
+    BASE_FEATURE_FIELDS[:-1]
+    + NEW_PREFERENCE_FIELDS
+    + [BASE_FEATURE_FIELDS[-1]]
+)
+
+SAMPLING_METADATA_FILENAME = "_SAMPLING_METADATA.json"
+PIPELINE_VERSION = "br_100seq_eve_baseline_sampling_v1"
+SOURCE_TABLE = "soda_international_trade_stg.sailing_nearby_br_new"
+PREFERENCE_TABLE = (
+    "soda_international_trade_stg."
+    "user_shop_behavior_preference_whole"
+)
+
+def _touch_success(spark, dir_path):
+    """写入成功后，在输出目录创建 _SUCCESS 标记文件。"""
+    dir_path = dir_path.rstrip('/')
+    full_uri = dir_path if dir_path.startswith('hdfs://') else HDFS_NS + dir_path
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    uri = jvm.java.net.URI.create(full_uri)
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(uri, conf)
+    success_path = jvm.org.apache.hadoop.fs.Path(uri.getPath() + '/_SUCCESS')
+    out = fs.create(success_path, True)
+    out.close()
+    print('touch _SUCCESS:', full_uri + '/_SUCCESS')
+
+
+def write_json_to_hdfs(spark, file_path, payload):
+    """在 HDFS 上写一个 UTF-8 JSON 文件；调用方负责保证父目录存在。"""
+    full_uri = file_path if file_path.startswith('hdfs://') else HDFS_NS + file_path
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    uri = jvm.java.net.URI.create(full_uri)
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(uri, conf)
+    path_obj = jvm.org.apache.hadoop.fs.Path(uri.getPath())
+    output_stream = fs.create(path_obj, True)
+    writer = jvm.java.io.OutputStreamWriter(output_stream, "UTF-8")
+    try:
+        writer.write(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        writer.write("\n")
+    finally:
+        writer.close()
+    print("write sampling metadata:", full_uri)
+
+
+def get_hdfs_data_file_stats(spark, dir_path):
+    """统计输出目录中非下划线开头的数据文件数量和字节数。"""
+    full_uri = dir_path if dir_path.startswith('hdfs://') else HDFS_NS + dir_path
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    uri = jvm.java.net.URI.create(full_uri)
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(uri, conf)
+    dir_obj = jvm.org.apache.hadoop.fs.Path(uri.getPath())
+
+    file_count = 0
+    total_bytes = 0
+    if fs.exists(dir_obj):
+        for status in fs.listStatus(dir_obj):
+            name = status.getPath().getName()
+            if status.isFile() and not name.startswith("_") and not name.startswith("."):
+                file_count += 1
+                total_bytes += int(status.getLen())
+
+    return {
+        "data_file_count": file_count,
+        "data_file_total_bytes": total_bytes,
+    }
+
+
+
+def mapPartExtractx(iterator, cmd):
+    input_lines = list(iterator)
+    input_count = len(input_lines)
+    input_data = "\n".join(input_lines)
+
+    if input_data:
+        input_data += "\n"
+
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    stdout, stderr = process.communicate(input_data)
+    output_lines = stdout.splitlines()
+    output_count = len(output_lines)
+
+    output_ratio = (
+        float(output_count) / float(input_count)
+        if input_count > 0 else 1.0
+    )
+
+    stderr_head = (stderr or "")[-1000:].replace("\n", "\\n")
+
+    # 无论成功失败都输出分区级审计信息
+    print(
+        "FEA_EXTRACT_AUDIT "
+        "returncode=%d input_lines=%d output_lines=%d "
+        "output_ratio=%.8f stderr_tail=%s"
+        % (
+            process.returncode,
+            input_count,
+            output_count,
+            output_ratio,
+            stderr_head,
+        )
+    )
+
+    if process.returncode != 0:
+        raise RuntimeError(
+            "fea_extract failed: "
+            "returncode=%d, input_lines=%d, output_lines=%d, stderr=%s"
+            % (
+                process.returncode,
+                input_count,
+                output_count,
+                (stderr or "")[-4000:],
+            )
+        )
+
+    if input_count > 0 and output_count == 0:
+        raise RuntimeError(
+            "fea_extract returned empty output for non-empty partition: "
+            "input_lines=%d" % input_count
+        )
+
+    return output_lines
+
+def diagnose_extract_line(iterator, cmd, field_names):
+    """
+    小批量诊断：每条样本单独调用一次 fea_extract。
+
+    每条输入都会输出一条 JSON 诊断记录，但不会输出原始样本。
+    """
+    for line in iterator:
+        fields = line.split("\t")
+        traceid = fields[0] if fields else ""
+
+        traceid_sha1 = hashlib.sha1(
+            traceid.encode("utf-8", errors="ignore")
+        ).hexdigest()
+
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+
+        stdout, stderr = process.communicate(line + "\n")
+
+        output_lines = stdout.splitlines()
+        stderr_text = stderr or ""
+
+        if process.returncode != 0:
+            status = "returncode_error"
+        elif len(output_lines) == 0:
+            status = "no_output"
+        else:
+            status = "success"
+
+        empty_values = {"", "\\N", "null", "NULL", "None"}
+
+        field_value_map = dict(zip(field_names, fields))
+        new_field_names = NEW_PREFERENCE_FIELDS
+        new_fields = [
+            field_value_map.get(field_name, "")
+            for field_name in new_field_names
+        ]
+
+        empty_new_fields = [
+            name
+            for name, value in zip(new_field_names, new_fields)
+            if value in empty_values
+        ]
+
+        record = {
+            "status": status,
+            "is_cov_value": field_value_map.get("is_cov", ""),
+            "label_value": field_value_map.get("label", ""),
+            "traceid_sha1": traceid_sha1,
+            "returncode": process.returncode,
+            "input_column_count": len(fields),
+            "output_line_count": len(output_lines),
+            "stderr_line_count": len(stderr_text.splitlines()),
+            "stderr": stderr_text[-8000:],
+            "new_field_count": len(new_fields),
+            "new_nonempty_count": sum(
+                value not in empty_values
+                for value in new_fields
+            ),
+            "empty_new_fields": empty_new_fields,
+            "new_field_lengths": [
+                len(value) for value in new_fields
+            ],
+        }
+
+        yield (
+            status,
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+
+def parse_line(line):
+    lis = line.split('#', 1)[0].strip(' \n').split(' ')
+    cvr_label = float(lis[0])
+    add_info_list = line.split('#', 1)[1].strip(' \n').split('\t')
+    cat_label = float(add_info_list[9])
+    clk_label = float(add_info_list[8])
+    ext_label = float(add_info_list[15])
+    fea_index = []
+    fea_value = []
+    for i, x in enumerate(lis[1:]):
+        y = x.split(':')
+        ind = int(y[0])
+        val = int(y[1])
+        fea_index.append(ind)
+        fea_value.append(val)
+    #add_info_list = [i.encode() for i in add_info_list]
+    return fea_index, fea_value, cvr_label, cat_label, clk_label, ext_label,add_info_list
+
+
+def _as_binary(value):
+    try:
+        return 1 if float(value) != 0.0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_int_or_zero(value):
+    if value is None or value == "\\N" or str(value).strip() == "":
+        return 0
+    return int(float(value))
+
+
+def sampling_audit_record(line, is_preprocessed):
+    """解析 fea_extract/PreProcess 行，返回标签组合、曝光桶和预处理资格。"""
+    splits = line.split('#', 1)
+    if len(splits) < 2:
+        raise ValueError("sampling audit line does not contain #")
+
+    sparse_tokens = splits[0].strip().split(' ')
+    add_info = splits[1].strip().split('\t')
+    if not sparse_tokens or len(add_info) < 24:
+        raise ValueError(
+            "invalid sampling audit line: sparse=%d add_info=%d"
+            % (len(sparse_tokens), len(add_info))
+        )
+
+    is_cov = _as_binary(sparse_tokens[0])
+    is_clk = _as_binary(add_info[8])
+    is_cat = _as_binary(add_info[9])
+
+    if is_preprocessed:
+        # PreProcess 已经把 add_info[15] 替换为派生后的 is_ext_label。
+        is_ext_label = _as_binary(add_info[15])
+    else:
+        is_ext_cov = _as_int_or_zero(add_info[15])
+        u_req_time = _as_int_or_zero(add_info[21])
+        pay_timestamp = _as_int_or_zero(add_info[22])
+        diff_time = 0
+        if pay_timestamp > 0 and u_req_time > 0:
+            diff_time = pay_timestamp - u_req_time
+        is_ext_label = 1 if is_ext_cov == 1 and diff_time >= 0 else 0
+
+    trace_imp_cnt = _as_int_or_zero(add_info[18])
+    trace_bucket = "le_2" if trace_imp_cnt <= 2 else "gt_2"
+
+    uid = add_info[5]
+    u_nearby_imp_cnt = _as_int_or_zero(add_info[13])
+    preprocess_eligible = not (
+        u_nearby_imp_cnt > 1000 and uid != '0'
+    )
+
+    key = (
+        is_cov,
+        is_clk,
+        is_cat,
+        is_ext_label,
+        trace_bucket,
+    )
+    return key, preprocess_eligible
+
+
+def collect_extract_audit(rdd):
+    """一次扫描同时收集 PreProcess 前的全量和确定性过滤后分布。"""
+    pairs = rdd.map(
+        lambda line: sampling_audit_record(line, False)
+    ).map(
+        lambda item: (
+            item[0],
+            (1, 1 if item[1] else 0),
+        )
+    ).reduceByKey(
+        lambda left, right: (
+            left[0] + right[0],
+            left[1] + right[1],
+        )
+    ).collect()
+
+    all_counts = {}
+    eligible_counts = {}
+    for key, counts in pairs:
+        all_counts[key] = int(counts[0])
+        eligible_counts[key] = int(counts[1])
+    return all_counts, eligible_counts
+
+
+def collect_preprocessed_audit(rdd):
+    pairs = rdd.map(
+        lambda line: (
+            sampling_audit_record(line, True)[0],
+            1,
+        )
+    ).reduceByKey(lambda left, right: left + right).collect()
+    return {key: int(count) for key, count in pairs}
+
+
+def summarize_sampling_groups(group_counts):
+    total = int(sum(group_counts.values()))
+    label_positive = {
+        "is_cov": 0,
+        "is_clk": 0,
+        "is_cat": 0,
+        "is_ext_label": 0,
+    }
+    all_zero = 0
+    all_zero_le_2 = 0
+    all_zero_gt_2 = 0
+    combinations = []
+
+    for key in sorted(group_counts):
+        is_cov, is_clk, is_cat, is_ext_label, trace_bucket = key
+        count = int(group_counts[key])
+        label_positive["is_cov"] += count * is_cov
+        label_positive["is_clk"] += count * is_clk
+        label_positive["is_cat"] += count * is_cat
+        label_positive["is_ext_label"] += count * is_ext_label
+
+        is_all_zero = (
+            is_cov == 0
+            and is_clk == 0
+            and is_cat == 0
+            and is_ext_label == 0
+        )
+        if is_all_zero:
+            all_zero += count
+            if trace_bucket == "le_2":
+                all_zero_le_2 += count
+            else:
+                all_zero_gt_2 += count
+
+        combinations.append({
+            "is_cov": is_cov,
+            "is_clk": is_clk,
+            "is_cat": is_cat,
+            "is_ext_label": is_ext_label,
+            "trace_imp_bucket": trace_bucket,
+            "all_labels_zero": is_all_zero,
+            "count": count,
+        })
+
+    return {
+        "total": total,
+        "label_positive_counts": label_positive,
+        "all_labels_zero_count": all_zero,
+        "any_label_positive_count": total - all_zero,
+        "all_labels_zero_trace_le_2_count": all_zero_le_2,
+        "all_labels_zero_trace_gt_2_count": all_zero_gt_2,
+        "combinations": combinations,
+    }
+
+
+def build_retention_by_group(before_counts, after_counts):
+    result = []
+    for key in sorted(set(before_counts) | set(after_counts)):
+        before = int(before_counts.get(key, 0))
+        after = int(after_counts.get(key, 0))
+        is_cov, is_clk, is_cat, is_ext_label, trace_bucket = key
+        result.append({
+            "is_cov": is_cov,
+            "is_clk": is_clk,
+            "is_cat": is_cat,
+            "is_ext_label": is_ext_label,
+            "trace_imp_bucket": trace_bucket,
+            "all_labels_zero": (
+                is_cov == 0
+                and is_clk == 0
+                and is_cat == 0
+                and is_ext_label == 0
+            ),
+            "before_sampling_count": before,
+            "after_sampling_count": after,
+            "retention_rate": (
+                float(after) / float(before)
+                if before > 0 else None
+            ),
+        })
+    return result
+
+# 新增：HDFS工具函数，driver端执行
+def hdfs_path_exists(spark, hdfs_full_path):
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    uri = jvm.java.net.URI.create(hdfs_full_path)
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(uri, conf)
+    path_obj = jvm.org.apache.hadoop.fs.Path(hdfs_full_path)
+    return fs.exists(path_obj)
+
+
+def list_hdfs_dir_files(spark, hdfs_full_dir):
+    """列出HDFS目录下所有文件/子目录完整路径"""
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    uri = jvm.java.net.URI.create(hdfs_full_dir)
+    fs = jvm.org.apache.hadoop.fs.FileSystem.get(uri, conf)
+    dir_path = jvm.org.apache.hadoop.fs.Path(hdfs_full_dir)
+    if not fs.exists(dir_path):
+        return []
+    status_arr = fs.listStatus(dir_path)
+    file_list = []
+    for status in status_arr:
+        file_list.append(str(status.getPath()))
+    return file_list
+
+#hive 读取
+from datetime import datetime, timedelta
+print("开始执行")
+pipeline_start_epoch = time.time()
+pipeline_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+biz_date = str(${BIZ_DATE})
+dt = (
+    datetime.strptime(biz_date, "%Y%m%d")
+    - timedelta(days=1)
+).strftime("%Y%m%d")
+print("biz_date:", biz_date)
+print("实际读取日期 dt:", dt)
+
+# ===================== 前置HDFS目录检测 =====================
+# 审计任务写入独立目录，避免覆盖正式生产数据
+OUTPUT_ROOT = (
+    "/user/prod_soda_trade_strategy/rank/chenpinyuan/"
+    "hash_fea_new_br_100seq/train/"
+)
+
+target_output_dir = OUTPUT_ROOT.rstrip("/") + "/" + dt
+full_hdfs_dir = HDFS_NS + target_output_dir
+success_file_path = full_hdfs_dir.rstrip("/") + "/_SUCCESS"
+metadata_file_path = (
+    full_hdfs_dir.rstrip("/")
+    + "/"
+    + SAMPLING_METADATA_FILENAME
+)
+
+print("审计输出目录:", full_hdfs_dir)
+
+dir_exist = hdfs_path_exists(spark, full_hdfs_dir)
+if dir_exist:
+    if (
+        hdfs_path_exists(spark, success_file_path)
+        and hdfs_path_exists(spark, metadata_file_path)
+    ):
+        print(f"===== 检测到日期{dt}目录已完整生成，存在_SUCCESS和采样元数据，直接跳过任务 =====")
+        print(f"目标目录：{full_hdfs_dir}")
+        all_files = list_hdfs_dir_files(spark, full_hdfs_dir)
+        print("目录内文件列表：")
+        for f in all_files:
+            print(" -", f)
+        sys.exit(0)
+    else:
+        print(
+            f"目录{full_hdfs_dir}存在，但_SUCCESS或采样元数据不完整，重新生成"
+        )
+else:
+    print(f"目录{full_hdfs_dir}不存在，正常执行数据生成流程")
+# ==========================================================
+
+
+
+
+_add_driver_files(spark.sparkContext)
+
+# 获取特征列
+cols = [
+    c.strip()
+    for c in fea_cols_str.split(",")
+    if c.strip()
+]
+
+if not cols:
+    raise RuntimeError(
+        "feature column list is empty"
+    )
+
+if len(cols) != len(set(cols)):
+    duplicate_columns = sorted(
+        column for column in set(cols) if cols.count(column) > 1
+    )
+    raise RuntimeError(
+        "duplicate feature columns: %s"
+        % ",".join(duplicate_columns)
+    )
+
+last_input_column = cols[-1]
+base_last_input_column = BASE_FEATURE_FIELDS[-1]
+preference_dt = (
+    datetime.strptime(dt, "%Y%m%d")
+    - timedelta(days=1)
+).strftime("%Y%m%d")
+
+print("TRAILING_FIELD_FILL column_count:", len(cols))
+print("TRAILING_FIELD_FILL last_column:", last_input_column)
+print("PREFERENCE_JOIN sample_day:", dt)
+print("PREFERENCE_JOIN preference_day:", preference_dt)
+
+# ========== 下推过滤条件到 SQL ==========
+filter_sql = f"""
+SELECT {','.join(BASE_FEATURE_FIELDS)}
+FROM {SOURCE_TABLE}
+WHERE
+    u_channel = '0'
+    AND u_id NOT IN ('0', '-1')
+    AND is_imp = '1'
+    AND hit_code = '0'
+    AND concat(year, lpad(month, 2, '0'), lpad(day, 2, '0')) = '{dt}'
+"""
+
+preference_sql = f"""
+SELECT
+    CAST(uid AS STRING) AS preference_uid,
+    {','.join(NEW_PREFERENCE_FIELDS)}
+FROM {PREFERENCE_TABLE}
+WHERE
+    dt = '{preference_dt}'
+    AND country_code = 'BR'
+"""
+
+print("PIPELINE_AUDIT SQL_BEGIN")
+print(filter_sql)
+print("PIPELINE_AUDIT SQL_END")
+print("PIPELINE_AUDIT PREFERENCE_SQL_BEGIN")
+print(preference_sql)
+print("PIPELINE_AUDIT PREFERENCE_SQL_END")
+
+
+# ==================================================================
+# 小批量 fea_extract 逐行诊断
+# ==================================================================
+DIAG_ONLY = False
+DIAG_SAMPLE_SIZE = 1000
+
+
+def row_to_fea_extract_line(row):
+    """
+    按 fea_cols_str 顺序生成 TSV。
+
+    fea_extract 的分列逻辑不会保留行尾空字段，因此动态识别当前最后一列；
+    如果最后一列为 NULL 或空字符串，统一补 0，避免整行少一列。
+    """
+    values = []
+
+    for index, column_name in enumerate(cols):
+        value = row[column_name]
+
+        if index == len(cols) - 1:
+            if value is None or str(value).strip() == "":
+                value = 0
+
+        values.append(
+            "" if value is None else str(value)
+        )
+
+    return "\t".join(values)
+
+
+def diagnostic_row_to_line(row):
+    return row_to_fea_extract_line(row)
+
+
+# DIAG_ONLY 在抽样及偏好特征关联完成后执行，确保诊断输入与正式输入一致。
+
+# ------------------------------------------------------------------
+# 阶段 1：Hive SQL 过滤后的原始样本
+# ------------------------------------------------------------------
+raw_df = spark.sql(filter_sql).persist(StorageLevel.DISK_ONLY)
+
+raw_count = raw_df.count()
+raw_stats_row = raw_df.agg(
+    F.sum(
+        F.when(F.col("is_cov").cast("double") > 0, 1).otherwise(0)
+    ).alias("is_cov_positive"),
+    F.sum(
+        F.when(F.col("is_clk").cast("double") > 0, 1).otherwise(0)
+    ).alias("is_clk_positive"),
+    F.sum(
+        F.when(F.col("is_cat").cast("double") > 0, 1).otherwise(0)
+    ).alias("is_cat_positive"),
+    F.sum(
+        F.when(F.col("is_ext_cov").cast("double") > 0, 1).otherwise(0)
+    ).alias("is_ext_cov_positive"),
+    F.sum(
+        F.when(
+            F.col(base_last_input_column).isNull()
+            | (F.trim(F.col(base_last_input_column).cast("string")) == ""),
+            1,
+        ).otherwise(0)
+    ).alias("trailing_column_fill_count"),
+).collect()[0]
+
+raw_buy_positive = int(raw_stats_row["is_cov_positive"] or 0)
+raw_label_positive_counts = {
+    "is_cov": raw_buy_positive,
+    "is_clk": int(raw_stats_row["is_clk_positive"] or 0),
+    "is_cat": int(raw_stats_row["is_cat_positive"] or 0),
+    "is_ext_cov": int(raw_stats_row["is_ext_cov_positive"] or 0),
+}
+trailing_column_fill_count = int(
+    raw_stats_row["trailing_column_fill_count"] or 0
+)
+
+raw_buy_rate = (
+    float(raw_buy_positive) / float(raw_count)
+    if raw_count > 0 else 0.0
+)
+
+print(
+    "PIPELINE_AUDIT RAW_SQL "
+    "day=%s rows=%d cov_positive=%d cov_rate=%.8f "
+    "trailing_column=%s trailing_fill_count=%d"
+    % (
+        dt,
+        raw_count,
+        raw_buy_positive,
+        raw_buy_rate,
+        base_last_input_column,
+        trailing_column_fill_count,
+    )
+)
+
+if raw_count == 0:
+    raw_df.unpersist()
+    raise RuntimeError(
+        "Hive SQL returned zero rows for day %s" % dt
+    )
+
+
+# ------------------------------------------------------------------
+# 阶段 2：基线确定性过滤及 BUY=0 伯努利抽样
+# ------------------------------------------------------------------
+overexposure_condition = (
+    (F.coalesce(F.col("u_nearby_imp_cnt").cast("long"), F.lit(0)) > 1000)
+    & (F.col("u_id").cast("string") != F.lit("0"))
+)
+
+sampling_eligible_df = (
+    raw_df
+    .filter(~overexposure_condition)
+    .persist(StorageLevel.DISK_ONLY)
+)
+sampling_eligible_count = sampling_eligible_df.count()
+overexposure_filtered_count = raw_count - sampling_eligible_count
+
+buy_is_zero = (
+    F.coalesce(F.col("is_cov").cast("double"), F.lit(0.0)) == 0.0
+)
+
+before_sampling_row = sampling_eligible_df.agg(
+    F.sum(F.when(buy_is_zero, 1).otherwise(0)).alias("buy_zero"),
+    F.sum(F.when(~buy_is_zero, 1).otherwise(0)).alias("buy_nonzero"),
+).collect()[0]
+
+sampled_df = (
+    sampling_eligible_df
+    .filter(
+        (~buy_is_zero)
+        | (F.rand() <= F.lit(BASELINE_NEGATIVE_SAMPLE_RATE))
+    )
+    .persist(StorageLevel.DISK_ONLY)
+)
+
+sampled_count = sampled_df.count()
+after_sampling_row = sampled_df.agg(
+    F.sum(F.when(buy_is_zero, 1).otherwise(0)).alias("buy_zero"),
+    F.sum(F.when(~buy_is_zero, 1).otherwise(0)).alias("buy_nonzero"),
+).collect()[0]
+
+buy_zero_before = int(before_sampling_row["buy_zero"] or 0)
+buy_nonzero_before = int(before_sampling_row["buy_nonzero"] or 0)
+buy_zero_after = int(after_sampling_row["buy_zero"] or 0)
+buy_nonzero_after = int(after_sampling_row["buy_nonzero"] or 0)
+
+baseline_sampling_audit = {
+    "eligible_rows": sampling_eligible_count,
+    "overexposure_filtered_rows": overexposure_filtered_count,
+    "buy_zero_before": buy_zero_before,
+    "buy_zero_after": buy_zero_after,
+    "buy_zero_retention_rate": (
+        float(buy_zero_after) / float(buy_zero_before)
+        if buy_zero_before > 0 else None
+    ),
+    "buy_nonzero_before": buy_nonzero_before,
+    "buy_nonzero_after": buy_nonzero_after,
+    "buy_nonzero_retention_rate": (
+        float(buy_nonzero_after) / float(buy_nonzero_before)
+        if buy_nonzero_before > 0 else None
+    ),
+    "sampled_rows": sampled_count,
+}
+
+print(
+    "PIPELINE_AUDIT BASELINE_SAMPLING "
+    + json.dumps(baseline_sampling_audit, sort_keys=True)
+)
+
+sampling_eligible_df.unpersist()
+raw_df.unpersist()
+
+if sampled_count == 0:
+    sampled_df.unpersist()
+    raise RuntimeError("baseline sampling returned zero rows for day %s" % dt)
+
+
+# ------------------------------------------------------------------
+# 阶段 3：抽样后按 u_id LEFT JOIN D-1 用户偏好特征
+# ------------------------------------------------------------------
+preference_df = spark.sql(preference_sql)
+
+joined_df = (
+    sampled_df.alias("sample")
+    .join(
+        preference_df.alias("preference"),
+        F.col("sample.u_id").cast("string")
+        == F.col("preference.preference_uid"),
+        "left",
+    )
+    .select(
+        *[F.col("sample.%s" % field_name).alias(field_name)
+          for field_name in BASE_FEATURE_FIELDS],
+        F.when(
+            F.col("preference.preference_uid").isNotNull(),
+            F.lit(1),
+        ).otherwise(F.lit(0)).alias("__preference_matched"),
+        *[
+            F.coalesce(
+                F.col("preference.%s" % field_name).cast("string"),
+                F.lit(""),
+            ).alias(field_name)
+            for field_name in NEW_PREFERENCE_FIELDS
+        ]
+    )
+    .persist(StorageLevel.DISK_ONLY)
+)
+
+joined_count = joined_df.count()
+if joined_count != sampled_count:
+    joined_df.unpersist()
+    sampled_df.unpersist()
+    raise RuntimeError(
+        "LEFT JOIN changed row count: sampled=%d joined=%d; "
+        "preference table may contain duplicate uid rows"
+        % (sampled_count, joined_count)
+    )
+
+
+def nonempty_feature_expr(field_name):
+    normalized = F.trim(F.col(field_name).cast("string"))
+    invalid_values = ["", "\\N"]
+    if field_name in SHOP_ID_FIELDS:
+        invalid_values.extend(["0", "-1"])
+    return (~normalized.isin(invalid_values)) & normalized.isNotNull()
+
+
+def collect_coverage_metrics(dataframe, denominator_name):
+    expressions = [
+        F.count(F.lit(1)).alias("denominator"),
+        F.sum(F.col("__preference_matched")).alias("matched"),
+    ]
+    for field_name in NEW_PREFERENCE_FIELDS:
+        expressions.append(
+            F.sum(
+                F.when(nonempty_feature_expr(field_name), 1).otherwise(0)
+            ).alias(field_name)
+        )
+
+    row = dataframe.agg(*expressions).collect()[0]
+    denominator = int(row["denominator"] or 0)
+    matched = int(row["matched"] or 0)
+    feature_metrics = {}
+    for field_name in NEW_PREFERENCE_FIELDS:
+        covered = int(row[field_name] or 0)
+        feature_metrics[field_name] = {
+            "covered": covered,
+            "coverage_over_all": (
+                float(covered) / float(denominator)
+                if denominator > 0 else None
+            ),
+            "coverage_among_matched": (
+                float(covered) / float(matched)
+                if matched > 0 else None
+            ),
+        }
+    return {
+        "denominator_name": denominator_name,
+        "denominator": denominator,
+        "matched": matched,
+        "join_coverage": (
+            float(matched) / float(denominator)
+            if denominator > 0 else None
+        ),
+        "features": feature_metrics,
+    }
+
+
+sample_row_coverage = collect_coverage_metrics(joined_df, "sample_rows")
+joined_user_df = joined_df.dropDuplicates(["u_id"]).persist(
+    StorageLevel.DISK_ONLY
+)
+sample_user_coverage = collect_coverage_metrics(
+    joined_user_df,
+    "distinct_sample_users",
+)
+
+sequence_length_df = joined_user_df.select(
+    *[
+        F.when(
+            nonempty_feature_expr(field_name),
+            F.size(F.split(F.col(field_name), ",")),
+        ).otherwise(F.lit(0)).alias(field_name + "__length")
+        for field_name in SEQUENCE_FIELDS
+    ]
+)
+
+sequence_length_exprs = []
+for field_name in SEQUENCE_FIELDS:
+    length_column = field_name + "__length"
+    sequence_length_exprs.extend([
+        F.min(length_column).alias(field_name + "__min"),
+        F.expr(
+            "percentile_approx(%s, 0.5)" % length_column
+        ).alias(field_name + "__p50"),
+        F.expr(
+            "percentile_approx(%s, 0.9)" % length_column
+        ).alias(field_name + "__p90"),
+        F.expr(
+            "percentile_approx(%s, 0.99)" % length_column
+        ).alias(field_name + "__p99"),
+        F.max(length_column).alias(field_name + "__max"),
+        F.sum(
+            F.when(F.col(length_column) > 100, 1).otherwise(0)
+        ).alias(field_name + "__over_100"),
+    ])
+
+sequence_length_row = sequence_length_df.agg(
+    *sequence_length_exprs
+).collect()[0]
+sequence_length_audit = {
+    field_name: {
+        statistic: int(
+            sequence_length_row[field_name + "__" + statistic] or 0
+        )
+        for statistic in ["min", "p50", "p90", "p99", "max", "over_100"]
+    }
+    for field_name in SEQUENCE_FIELDS
+}
+
+print(
+    "PIPELINE_AUDIT PREFERENCE_ROW_COVERAGE "
+    + json.dumps(sample_row_coverage, sort_keys=True)
+)
+print(
+    "PIPELINE_AUDIT PREFERENCE_USER_COVERAGE "
+    + json.dumps(sample_user_coverage, sort_keys=True)
+)
+print(
+    "PIPELINE_AUDIT PREFERENCE_SEQUENCE_LENGTH "
+    + json.dumps(sequence_length_audit, sort_keys=True)
+)
+
+joined_user_df.unpersist()
+sampled_df.unpersist()
+
+final_input_df = joined_df.select(*cols).persist(StorageLevel.DISK_ONLY)
+final_input_count = final_input_df.count()
+joined_df.unpersist()
+
+if final_input_count != sampled_count:
+    final_input_df.unpersist()
+    raise RuntimeError(
+        "final input row count mismatch: sampled=%d final_input=%d"
+        % (sampled_count, final_input_count)
+    )
+
+
+if DIAG_ONLY:
+    print(
+        "FEA_EXTRACT_LINE_DIAG start day=%s sample_size=%d"
+        % (dt, DIAG_SAMPLE_SIZE)
+    )
+    diagnostic_input_rdd = (
+        final_input_df.limit(DIAG_SAMPLE_SIZE)
+        .rdd.map(diagnostic_row_to_line)
+    )
+    diagnostic_pair_rdd = diagnostic_input_rdd.mapPartitions(
+        lambda part: diagnose_extract_line(
+            part,
+            ["./fea_extract", "./parse.conf"],
+            cols,
+        )
+    ).persist(StorageLevel.DISK_ONLY)
+    diagnostic_counts = dict(
+        diagnostic_pair_rdd.map(lambda item: (item[0], 1))
+        .reduceByKey(lambda left, right: left + right)
+        .collect()
+    )
+    diagnostic_path = (
+        OUTPUT_ROOT.rstrip("/") + "/_diagnostics/" + dt
+        + "_fea_extract_line_results"
+    )
+    spark.createDataFrame(
+        diagnostic_pair_rdd.map(lambda item: (item[1],)),
+        ["value"],
+    ).coalesce(1).write.mode("overwrite").text(diagnostic_path)
+    print(
+        "FEA_EXTRACT_LINE_DIAG completed day=%s counts=%s output=%s"
+        % (dt, json.dumps(diagnostic_counts, sort_keys=True),
+           HDFS_NS + diagnostic_path)
+    )
+    diagnostic_pair_rdd.unpersist()
+    final_input_df.unpersist()
+    sys.exit(0)
+
+
+def hive_df_to_lines(partition):
+    for row in partition:
+        yield row_to_fea_extract_line(row)
+
+
+# ------------------------------------------------------------------
+# 阶段 4：fea_extract 处理后的样本
+# ------------------------------------------------------------------
+input_rdd = final_input_df.rdd.mapPartitions(hive_df_to_lines)
+
+extract_rdd = input_rdd.mapPartitions(
+    lambda part: mapPartExtractx(
+        part,
+        ["./fea_extract", "./parse.conf"],
+    )
+).persist(StorageLevel.DISK_ONLY)
+
+extract_count = extract_rdd.count()
+
+extract_ratio = (
+    float(extract_count) / float(final_input_count)
+    if final_input_count > 0 else 0.0
+)
+
+print(
+    "PIPELINE_AUDIT AFTER_EXTRACT "
+    "day=%s input_rows=%d output_rows=%d output_ratio=%.8f"
+    % (
+        dt,
+        final_input_count,
+        extract_count,
+        extract_ratio,
+    )
+)
+
+# extract_rdd 已经物化，可以释放关联后输入缓存
+final_input_df.unpersist()
+
+if extract_count == 0:
+    extract_rdd.unpersist()
+    raise RuntimeError(
+        "fea_extract returned zero rows for day %s" % dt
+    )
+
+extract_group_counts, unused_eligible_group_counts = collect_extract_audit(
+    extract_rdd
+)
+extract_group_summary = summarize_sampling_groups(extract_group_counts)
+
+print(
+    "PIPELINE_AUDIT AFTER_EXTRACT_LABELS "
+    "day=%s rows=%d buy_positive=%d click_positive=%d "
+    "cat_positive=%d ext_positive=%d"
+    % (
+        dt,
+        extract_group_summary["total"],
+        extract_group_summary["label_positive_counts"]["is_cov"],
+        extract_group_summary["label_positive_counts"]["is_clk"],
+        extract_group_summary["label_positive_counts"]["is_cat"],
+        extract_group_summary["label_positive_counts"]["is_ext_label"],
+    )
+)
+
+
+# ------------------------------------------------------------------
+# 阶段 5：PreProcess 标签修正（禁止再次抽样）
+# ------------------------------------------------------------------
+pre = PreProcess(
+    is_test=False,
+    **PREPROCESS_CONFIG
+)
+
+preprocessed_rdd = (
+    extract_rdd
+    .map(pre.parse_line)
+    .filter(lambda x: x is not None)
+    .persist(StorageLevel.DISK_ONLY)
+)
+
+preprocess_count = preprocessed_rdd.count()
+
+preprocessed_group_counts = collect_preprocessed_audit(
+    preprocessed_rdd
+)
+preprocessed_group_summary = summarize_sampling_groups(
+    preprocessed_group_counts
+)
+retention_by_group = build_retention_by_group(
+    extract_group_counts,
+    preprocessed_group_counts,
+)
+
+preprocess_ratio = (
+    float(preprocess_count) / float(extract_count)
+    if extract_count > 0 else 0.0
+)
+
+print(
+    "PIPELINE_AUDIT AFTER_PREPROCESS "
+    "day=%s input_rows=%d output_rows=%d output_ratio=%.8f "
+    "post_extract_sampling_enabled=%s"
+    % (
+        dt,
+        extract_count,
+        preprocess_count,
+        preprocess_ratio,
+        pre.enable_sample,
+    )
+)
+
+# 预处理结果已物化，可以释放 extract_rdd
+extract_rdd.unpersist()
+
+if preprocess_count == 0:
+    preprocessed_rdd.unpersist()
+    raise RuntimeError(
+        "PreProcess returned zero rows for day %s" % dt
+    )
+
+
+# ------------------------------------------------------------------
+# 阶段 6：转换为最终 TFRecord schema
+# ------------------------------------------------------------------
+parsed_rdd = (
+    preprocessed_rdd
+    .map(parse_line)
+    .persist(StorageLevel.DISK_ONLY)
+)
+
+final_count = parsed_rdd.count()
+
+print(
+    "PIPELINE_AUDIT FINAL_PARSED "
+    "day=%s input_rows=%d output_rows=%d output_ratio=%.8f"
+    % (
+        dt,
+        preprocess_count,
+        final_count,
+        (
+            float(final_count) / float(preprocess_count)
+            if preprocess_count > 0 else 0.0
+        ),
+    )
+)
+
+preprocessed_rdd.unpersist()
+
+if final_count == 0:
+    parsed_rdd.unpersist()
+    raise RuntimeError(
+        "Final parsed RDD contains zero rows for day %s" % dt
+    )
+
+
+schema = StructType([
+    StructField("fea_ids", ArrayType(LongType())),
+    StructField("fea_vals", ArrayType(LongType())),
+    StructField("cvr_label", FloatType()),
+    StructField("cat_label", FloatType()),
+    StructField("clk_label", FloatType()),
+    StructField("ext_label", FloatType()),
+    StructField("add_info_list", ArrayType(StringType())),
+])
+
+output_df = spark.createDataFrame(
+    parsed_rdd,
+    schema=schema,
+)
+
+# 必须与前面的 target_output_dir 使用同一个新目录
+output_path = target_output_dir
+
+print(
+    "PIPELINE_AUDIT WRITE_BEGIN "
+    "day=%s rows=%d output=%s"
+    % (
+        dt,
+        final_count,
+        HDFS_NS + output_path,
+    )
+)
+
+(
+    output_df
+    .repartition(10)
+    .write
+    .mode("overwrite")
+    .format("tfrecord")
+    .option("recordType", "Example")
+    .option("codec", "org.apache.hadoop.io.compress.GzipCodec")
+    .save(output_path)
+)
+
+print(
+    "数据写入成功,精确写入条数:",
+    dt,
+    final_count,
+)
+
+output_file_stats = get_hdfs_data_file_stats(spark, output_path)
+pipeline_end_epoch = time.time()
+pipeline_end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+sampling_metadata = {
+    "pipeline": {
+        "version": PIPELINE_VERSION,
+        "spark_application_id": spark.sparkContext.applicationId,
+        "start_time": pipeline_start_time,
+        "end_time": pipeline_end_time,
+        "duration_seconds": round(
+            pipeline_end_epoch - pipeline_start_epoch,
+            3,
+        ),
+    },
+    "partition": {
+        "biz_date": biz_date,
+        "data_date": dt,
+        "source_table": SOURCE_TABLE,
+        "preference_date": preference_dt,
+        "preference_table": PREFERENCE_TABLE,
+        "output_path": HDFS_NS + output_path,
+    },
+    "input_schema": {
+        "feature_column_count": len(cols),
+        "baseline_feature_column_count": len(BASE_FEATURE_FIELDS),
+        "new_preference_feature_count": len(NEW_PREFERENCE_FIELDS),
+        "new_preference_fields": NEW_PREFERENCE_FIELDS,
+        "first_column": cols[0],
+        "last_column": last_input_column,
+        "trailing_column_default": "0",
+        "trailing_column_fill_count": trailing_column_fill_count,
+    },
+    "filters": {
+        "sql": [
+            "u_channel = '0'",
+            "u_id NOT IN ('0', '-1')",
+            "is_imp = '1'",
+            "hit_code = '0'",
+        ],
+        "preprocess": [
+            "drop before join when u_nearby_imp_cnt > 1000 and u_id != '0'",
+        ],
+        "preprocess_filtered_count": overexposure_filtered_count,
+    },
+    "sampling": {
+        "enabled": True,
+        "stage": "before_preference_left_join_and_before_fea_extract",
+        "method": "spark_rand_bernoulli",
+        "random_seed": None,
+        "baseline_pos_rate": BASELINE_POS_RATE,
+        "baseline_rate": BASELINE_RATE,
+        "negative_sample_rate": BASELINE_NEGATIVE_SAMPLE_RATE,
+        "primary_label": "is_cov",
+        "rule": "sample only when is_cov == 0; retain all is_cov != 0",
+        "post_extract_sampling_enabled": pre.enable_sample,
+        "is_ext_label_rule": (
+            "is_ext_cov == 1 and "
+            "derived(pay_timestamp - u_req_time) >= 0"
+        ),
+    },
+    "stage_counts": {
+        "raw_sql": raw_count,
+        "sampling_eligible": sampling_eligible_count,
+        "after_baseline_sampling": sampled_count,
+        "after_preference_left_join": joined_count,
+        "final_extract_input": final_input_count,
+        "after_fea_extract": extract_count,
+        "after_preprocess": preprocess_count,
+        "final_parsed": final_count,
+    },
+    "stage_ratios": {
+        "sampling_eligible_over_raw": (
+            float(sampling_eligible_count) / float(raw_count)
+            if raw_count > 0 else None
+        ),
+        "sampled_over_sampling_eligible": (
+            float(sampled_count) / float(sampling_eligible_count)
+            if sampling_eligible_count > 0 else None
+        ),
+        "preference_join_row_conservation": (
+            float(joined_count) / float(sampled_count)
+            if sampled_count > 0 else None
+        ),
+        "fea_extract_over_final_input": extract_ratio,
+        "final_over_preprocessed": (
+            float(final_count) / float(preprocess_count)
+            if preprocess_count > 0 else None
+        ),
+    },
+    "raw_label_positive_counts": raw_label_positive_counts,
+    "preference_coverage": {
+        "sample_rows": sample_row_coverage,
+        "distinct_sample_users": sample_user_coverage,
+        "sequence_lengths": sequence_length_audit,
+    },
+    "label_distribution": {
+        "after_fea_extract": extract_group_summary,
+        "after_post_extract_transform": preprocessed_group_summary,
+    },
+    "sampling_result": {
+        "baseline_sampling": baseline_sampling_audit,
+        "post_extract_transform_by_label_and_trace_bucket": retention_by_group,
+    },
+    "output": output_file_stats,
+}
+
+write_json_to_hdfs(
+    spark,
+    output_path.rstrip("/") + "/" + SAMPLING_METADATA_FILENAME,
+    sampling_metadata,
+)
+
+_touch_success(spark, output_path)
+
+parsed_rdd.unpersist()
+
+print(
+    "PIPELINE_AUDIT COMPLETED "
+    "day=%s preference_day=%s raw=%d sampled=%d joined=%d "
+    "extracted=%d preprocessed=%d final=%d output=%s"
+    % (
+        dt,
+        preference_dt,
+        raw_count,
+        sampled_count,
+        joined_count,
+        extract_count,
+        preprocess_count,
+        final_count,
+        HDFS_NS + output_path,
+    )
+)
