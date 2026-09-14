@@ -10,6 +10,7 @@ from model import Model
 from datetime import timedelta
 from tensorflow.keras import regularizers
 import time
+from ema_shadow import EMAShadow
 
 class Learner:
     def __init__(self):
@@ -42,18 +43,25 @@ class Learner:
         #ckpt_path="model/checkpoints/20260430_0/"
         if ckpt_path is not None:
             print("load model from checkpoint:", ckpt_path)
-            ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-
             first_batch = next(iter(train_data))
             _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
 
             dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
             model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
 
-            #ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).expect_partial()
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
+            ema_state = EMAShadow(model.trainable_weights, decay=0.999)
+            ckpt = tf.train.Checkpoint(
+                model=model, optimizer=model.optimizer, ema=ema_state
+            )
+            latest = tf.train.latest_checkpoint(ckpt_path)
+            if latest is None:
+                raise RuntimeError("checkpoint metadata not found: %s" % ckpt_path)
+            ckpt.restore(latest).assert_consumed()
+            ema_state.assign_to(model.trainable_weights)
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
             print("load checkpoint path: ", ckpt_path)
+            print("EVALUATION_USES_EMA_SHADOW variables=%d decay=%.6f" % (
+                len(ema_state.values), float(ema_state.decay.numpy())))
 
         buy_weight = 1.0
         cat_weight = 1.0

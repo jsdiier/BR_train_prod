@@ -11,10 +11,12 @@ from model import Model
 from tensorflow.keras import regularizers
 import time
 from sklearn import metrics
+from ema_shadow import EMAShadow
 
 class Learner:
     def __init__(self):
         self.model = None
+        self.ema_state = None
         self.ema_vars = None
         self.ema_decay = 0.999
 
@@ -37,9 +39,8 @@ class Learner:
 
             gradients = tape.gradient(final_loss, model.trainable_weights)
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * w)
+        if self.ema_state is not None:
+            self.ema_state.update(model.trainable_weights)
         return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
 
     def _date_range(self, start, end):
@@ -83,30 +84,40 @@ class Learner:
         batch_size = model_conf.batch_size
         shuffle_size = batch_size * 10
 
-        #load ckpt (需要先跑一个 batch 建好变量再 restore)
-        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
-        if ckpt_path is not None:
-            print("load model from checkpoint:", ckpt_path)
-            ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-
-            probe_files = self.get_day_files(data_arg, days[0])
-            probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size, fetch_size=1, num_parallel=10)
-            first_batch = next(iter(probe_ds))
-            _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-
-            dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
-            model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
-
-            ckpt.restore(tf.train.latest_checkpoint(ckpt_path)).assert_consumed()
-            print("Restored optimizer step: ", model.optimizer.iterations.numpy())
-            print("load checkpoint path: ", ckpt_path)
-
+        # Build model variables before creating/restoring the trackable EMA state.
         probe_files = self.get_day_files(data_arg, days[0])
+        if not probe_files:
+            raise RuntimeError("no probe files found for first training day: %s" % days[0])
         probe_ds = ut.ReadTFRecordV2(probe_files, shuffle_size=1, batch_size=batch_size,
                                      fetch_size=1, num_parallel=10)
         first_batch = next(iter(probe_ds))
         _ = model([first_batch['fea_ids'], first_batch['fea_vals']])
-        self.ema_vars = [tf.Variable(v, trainable=False) for v in model.trainable_weights]
+
+        # Load raw model + optimizer + persistent EMA shadow together.
+        ckpt_path = model_path or self.get_model_checkpoint_from_file(model_conf.done_file_path)
+        if ckpt_path is not None:
+            print("load model from checkpoint:", ckpt_path)
+            dummy_grad = [tf.zeros_like(v) for v in model.trainable_variables]
+            model.optimizer.apply_gradients(zip(dummy_grad, model.trainable_variables))
+
+        self.ema_state = EMAShadow(model.trainable_weights, decay=self.ema_decay)
+        self.ema_vars = self.ema_state.values
+
+        if ckpt_path is not None:
+            ckpt = tf.train.Checkpoint(
+                model=model, optimizer=model.optimizer, ema=self.ema_state
+            )
+            latest = tf.train.latest_checkpoint(ckpt_path)
+            if latest is None:
+                raise RuntimeError("checkpoint metadata not found: %s" % ckpt_path)
+            ckpt.restore(latest).assert_consumed()
+            print("Restored optimizer step: ", model.optimizer.iterations.numpy())
+            print("load checkpoint path: ", ckpt_path)
+            print("EMA_SHADOW_RESTORED variables=%d decay=%.6f" % (
+                len(self.ema_vars), float(self.ema_state.decay.numpy())))
+        else:
+            print("EMA_SHADOW_INITIALIZED variables=%d decay=%.6f" % (
+                len(self.ema_vars), float(self.ema_state.decay.numpy())))
 
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
@@ -266,12 +277,11 @@ class Learner:
 
     def save_checkpoint(self, day):
         model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, model.trainable_weights):
-                w.assign(ema_v)
         save_dir = "%s/checkpoints/%s/" % (model_conf.local_model_dir, day)
         export_dir = save_dir + "tfmodel"
-        ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
+        ckpt = tf.train.Checkpoint(
+            model=model, optimizer=model.optimizer, ema=self.ema_state
+        )
         ckpt.save(export_dir)
 
         done_dir = os.path.dirname(model_conf.done_file_path)
@@ -285,16 +295,17 @@ class Learner:
                 f.write(day + "\t" + save_dir + "\n")
         except Exception as e:
             print("Warning: Failed to write done file %s:" % model_conf.done_file_path, e)
-        print(datetime.datetime.now(), "saved checkpoint for day %s -> %s" % (day, save_dir))
+        print(datetime.datetime.now(),
+              "saved raw+optimizer+EMA checkpoint for day %s -> %s" % (day, save_dir))
 
     def dump_serving_model(self, end_day, epo):
         if self.model is None:
             return
 
         train_model = self.model
-        if self.ema_vars is not None:
-            for ema_v, w in zip(self.ema_vars, train_model.trainable_weights):
-                w.assign(ema_v)
+        if self.ema_state is not None:
+            self.ema_state.assign_to(train_model.trainable_weights)
+            print("SERVING_USES_EMA_SHADOW variables=%d" % len(self.ema_vars))
 
         fid_keys, fid_values = train_model.fid_table.export()
         fid_keys_ads, fid_values_ads = train_model.fid_table_din_ads.export()
