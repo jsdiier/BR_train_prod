@@ -25,7 +25,8 @@ def main():
     assert 'wandb.watch' not in train_text
     assert 'WANDB_API_KEY=' not in common_text
     assert 'export WANDB_API_KEY=' in train_shell_text
-    assert 'WANDB_PROJECT="br-rank-prod"' in common_text
+    assert 'WANDB_PROJECT="chen1109487007-a123/br-rank-prod"' in common_text
+    assert train_text.index("tf.config.experimental.set_memory_growth(gpu, True)") < train_text.index("solver = Learner()")
     assert 'WANDB_TASK_GRAD_INTERVAL=0' in common_text
     assert experiment['branch'] == 'BR_train_prod_baseline_w_wandb'
     assert experiment['change'] == 'wandb_observability_only'

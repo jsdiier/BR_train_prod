@@ -735,14 +735,16 @@ if __name__ == "__main__":
                        help='1: dump serving model after training; 0: checkpoint only')
 
     args = parse.parse_args()
-    solver = Learner()
-
-    # set GPU
+    # Configure GPU before constructing Learner. Learner.__init__ creates
+    # TensorFlow variables, which initializes the physical device and makes a
+    # later set_memory_growth call fail.
     os.environ['CUDA_VISIBLE_DEVICES'] = model_conf.gpu_id
     print('CUDA_VISIBLE_DEVICES', os.environ['CUDA_VISIBLE_DEVICES'])
     gpus = tf.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
+
+    solver = Learner()
 
     # start training or testing
     if model_conf.train_mode == 'train':
