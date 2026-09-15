@@ -10,8 +10,8 @@
 The integration is observational only. Gradient norms are measured before
 `apply_gradients`; no clipping or gradient replacement is performed.
 
-`WANDB_API_KEY` must be supplied by the Luban runtime or the user's private
-environment. It must not be added to this repository. If W&B cannot be imported,
+For this private experiment, `WANDB_API_KEY` is exported directly by `train.sh`,
+matching the established TensorFlow rank integration. If W&B cannot be imported,
 initialized, or reached, training continues and the same scalar records are
 appended to `log/wandb_metrics.jsonl`.
 
@@ -20,11 +20,10 @@ Before launching on Luban, verify the selected Python environment:
 ```bash
 source ./common.conf
 "$python" -c 'import wandb; print(wandb.__version__)'
-test -n "${WANDB_API_KEY:-}" && echo WANDB_API_KEY_SET || echo WANDB_API_KEY_MISSING
+grep -q '^export WANDB_API_KEY=' train.sh && echo WANDB_API_KEY_CONFIGURED
 ```
 
 The default run records losses, label rates, prediction distributions,
 throughput, learning rate, global and module gradient norms, periodic parameter
 norms, numerical-health counters, and daily AUC/GAUC/MAE. W&B system monitoring
 adds GPU, CPU, and memory telemetry when supported by the installed client.
-

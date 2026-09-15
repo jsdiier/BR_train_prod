@@ -13,6 +13,7 @@ def main():
     train_text = (ROOT / 'train.py').read_text()
     monitor_text = (ROOT / 'wandb_monitor.py').read_text()
     common_text = (ROOT / 'common.conf').read_text()
+    train_shell_text = (ROOT / 'train.sh').read_text()
     experiment = json.loads((ROOT / 'experiment.json').read_text())
 
     ast.parse(train_text)
@@ -23,6 +24,7 @@ def main():
     assert 'tf.clip_by_global_norm' not in train_text
     assert 'wandb.watch' not in train_text
     assert 'WANDB_API_KEY=' not in common_text
+    assert 'export WANDB_API_KEY=' in train_shell_text
     assert 'WANDB_PROJECT="br-rank-prod"' in common_text
     assert 'WANDB_TASK_GRAD_INTERVAL=0' in common_text
     assert experiment['branch'] == 'BR_train_prod_baseline_w_wandb'

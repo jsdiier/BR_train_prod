@@ -2,7 +2,11 @@
 
 source ./common.conf
 
-# Persist exact source identity in W&B without storing credentials in Git.
+# Private-project credential, intentionally mirrored from the established
+# TensorFlow rank W&B integration.
+export WANDB_API_KEY=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
+
+# Persist exact source identity in W&B.
 export GIT_BRANCH="${GIT_BRANCH:-$(git branch --show-current 2>/dev/null || echo unknown)}"
 export GIT_COMMIT="${GIT_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
 
