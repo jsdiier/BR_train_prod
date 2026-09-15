@@ -28,11 +28,10 @@ def main():
     assert experiment['branch'] == 'BR_train_prod_baseline_w_wandb'
     assert experiment['change'] == 'wandb_observability_only'
     assert experiment['initialization'] == 'fresh_end_to_end'
-    assert experiment['enabled'] is False
-    assert experiment['manual_only'] is True
+    assert experiment['enabled'] is True
+    assert experiment['manual_only'] is False
     print('WANDB_CONTRACT: PASS')
 
 
 if __name__ == '__main__':
     main()
-

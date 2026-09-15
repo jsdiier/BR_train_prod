@@ -1,6 +1,6 @@
 {
-  "enabled": false,
-  "manual_only": true,
+  "enabled": true,
+  "manual_only": false,
   "rolling_enabled": true,
   "batch_group": "baseline_wandb_observability_20260915",
   "baseline": "BR_train_prod_baseline_rerun_20260823",
