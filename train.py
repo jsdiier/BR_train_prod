@@ -10,20 +10,31 @@ import model_conf
 from model import Model
 from tensorflow.keras import regularizers
 import time
+import hashlib
 from sklearn import metrics
+from wandb_monitor import WandbMonitor
 
 class Learner:
     def __init__(self):
         self.model = None
+        self.wandb_monitor = WandbMonitor()
+        self.wandb_log_interval = max(1, int(os.environ.get('WANDB_LOG_INTERVAL', '100')))
+        self.wandb_param_interval = max(0, int(os.environ.get('WANDB_PARAM_INTERVAL', '1000')))
+        self.wandb_task_grad_interval = max(0, int(os.environ.get('WANDB_TASK_GRAD_INTERVAL', '0')))
+        self.loss_window_sum = tf.Variable(tf.zeros([5], tf.float32), trainable=False)
+        self.loss_window_square_sum = tf.Variable(tf.zeros([5], tf.float32), trainable=False)
+        self.loss_window_count = tf.Variable(0.0, trainable=False, dtype=tf.float32)
 
     def set_training_mode(self, enable_training, is_save_model):
         self.model.training = enable_training
         self.model.is_save_model = is_save_model
 
     @tf.function(experimental_relax_shapes=True)
-    def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0):
+    def train_step(self, feat, buy_weight=1.0, cat_weight=1.0, click_weight=1.0, ext_weight=1.0,
+                   collect_grad_stats=False, collect_param_stats=False,
+                   collect_task_grad_stats=False):
         model = self.model
-        with tf.GradientTape() as tape:
+        with tf.GradientTape(persistent=collect_task_grad_stats) as tape:
             pred_buy, pred_cat, pred_click, pred_ext = model([feat['fea_ids'], feat['fea_vals']])
 
             loss_buy = model.loss_bc(tf.expand_dims(feat['cvr_label'], 1), pred_buy)
@@ -33,9 +44,239 @@ class Learner:
 
             final_loss = loss_buy * buy_weight + loss_cat * cat_weight + loss_click * click_weight + loss_ext * ext_weight
 
+            loss_means = tf.stack([
+                tf.reduce_mean(loss_buy),
+                tf.reduce_mean(loss_cat),
+                tf.reduce_mean(loss_click),
+                tf.reduce_mean(loss_ext),
+                tf.reduce_mean(final_loss),
+            ])
+            self.loss_window_sum.assign_add(loss_means)
+            self.loss_window_square_sum.assign_add(tf.square(loss_means))
+            self.loss_window_count.assign_add(1.0)
+
             gradients = tape.gradient(final_loss, model.trainable_weights)
+
+        monitor_stats = self._empty_monitor_stats()
+        if collect_grad_stats or collect_param_stats:
+            monitor_stats.update(self._collect_module_stats(
+                gradients,
+                model.trainable_weights,
+                tf.shape(feat['cvr_label'])[0],
+                collect_grad_stats,
+                collect_param_stats,
+            ))
+        if collect_task_grad_stats:
+            monitor_stats.update(self._collect_task_gradient_stats(
+                tape,
+                [loss_buy, loss_cat, loss_click, loss_ext],
+            ))
+            del tape
+        if collect_grad_stats or collect_param_stats or collect_task_grad_stats:
+            monitor_stats.update(self._loss_window_stats())
+
         model.optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-        return loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext
+        return (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+                pred_buy, pred_cat, pred_click, pred_ext, monitor_stats)
+
+    def _loss_window_stats(self):
+        count = tf.maximum(self.loss_window_count, 1.0)
+        mean = self.loss_window_sum / count
+        variance = tf.maximum(self.loss_window_square_sum / count - tf.square(mean), 0.0)
+        std = tf.sqrt(variance)
+        names = ['buy', 'cat', 'click', 'ext', 'total']
+        stats = {'loss/window_batches': self.loss_window_count}
+        for index, name in enumerate(names):
+            stats['loss_window/%s_mean' % name] = mean[index]
+            stats['loss_window/%s_std' % name] = std[index]
+        return stats
+
+    def _reset_loss_window(self):
+        self.loss_window_sum.assign(tf.zeros_like(self.loss_window_sum))
+        self.loss_window_square_sum.assign(tf.zeros_like(self.loss_window_square_sum))
+        self.loss_window_count.assign(0.0)
+
+    @staticmethod
+    def _gradient_values(gradient):
+        if isinstance(gradient, tf.IndexedSlices):
+            return gradient.values
+        return gradient
+
+    def _empty_monitor_stats(self):
+        nan = tf.constant(float('nan'), dtype=tf.float32)
+        keys = [
+            'grad/global_norm_raw',
+            'grad/global_norm_per_sample',
+            'grad/max_abs',
+            'grad/nonfinite_count',
+            'grad/zero_fraction',
+            'loss/window_batches',
+        ]
+        for name in ['buy', 'cat', 'click', 'ext', 'total']:
+            keys.extend([
+                'loss_window/%s_mean' % name,
+                'loss_window/%s_std' % name,
+            ])
+        module_names = ['embedding', 'din', 'shared', 'buy_head', 'cat_head', 'click_head', 'ext_head']
+        for name in module_names:
+            keys.extend([
+                'grad/module_%s_norm' % name,
+                'parameter/module_%s_norm' % name,
+                'gradient_to_parameter/module_%s' % name,
+            ])
+        task_names = ['buy', 'cat', 'click', 'ext']
+        for name in task_names:
+            keys.append('grad/task_%s_shared_norm' % name)
+        for left_index, left in enumerate(task_names):
+            for right in task_names[left_index + 1:]:
+                keys.append('grad/cosine_shared_%s_%s' % (left, right))
+        return {key: nan for key in keys}
+
+    @staticmethod
+    def _layer_variable_ids(layers):
+        variable_ids = set()
+        for layer in layers:
+            if layer is None:
+                continue
+            for variable in layer.trainable_variables:
+                variable_ids.add(id(variable))
+        return variable_ids
+
+    def _module_variable_groups(self):
+        model = self.model
+        embedding_ids = self._layer_variable_ids([model.emb_fm, model.emb_din_ads])
+        din_ids = self._layer_variable_ids([
+            model.seq_click_attention_layer,
+            model.seq_pay_attention_layer,
+            model.seq_12h_click_cate_id_attention_layer,
+            model.attention_layer_search_long_pay,
+            model.attention_layer_search_long_clk,
+            model.attention_layer_search_long_query,
+            model.pay_seq_ln,
+            model.pay_seq_proj,
+            model.pay_seq_combine,
+            model.clk_seq_ln,
+            model.clk_seq_proj,
+            model.clk_seq_combine,
+            model.query_seq_ln,
+            model.query_seq_proj,
+            model.query_seq_combine,
+        ])
+        buy_ids = self._layer_variable_ids([model.buy_tower, model.dense_concat])
+        cat_ids = self._layer_variable_ids([model.cat_tower, model.dense_concat1])
+        click_ids = self._layer_variable_ids([model.click_tower, model.dense_concat2])
+        ext_ids = self._layer_variable_ids([model.ext_tower, model.dense_concat3])
+        assigned_ids = embedding_ids | din_ids | buy_ids | cat_ids | click_ids | ext_ids
+        shared_ids = set(id(variable) for variable in model.trainable_weights) - assigned_ids
+        return {
+            'embedding': embedding_ids,
+            'din': din_ids,
+            'shared': shared_ids,
+            'buy_head': buy_ids,
+            'cat_head': cat_ids,
+            'click_head': click_ids,
+            'ext_head': ext_ids,
+        }
+
+    def _collect_module_stats(self, gradients, variables, batch_size,
+                              collect_grad_stats, collect_param_stats):
+        stats = {}
+        valid_pairs = [
+            (gradient, variable)
+            for gradient, variable in zip(gradients, variables)
+            if gradient is not None
+        ]
+        valid_gradients = [pair[0] for pair in valid_pairs]
+        batch_size_float = tf.cast(tf.maximum(batch_size, 1), tf.float32)
+
+        if collect_grad_stats:
+            gradient_values = [self._gradient_values(gradient) for gradient in valid_gradients]
+            global_norm = tf.linalg.global_norm(valid_gradients)
+            nonfinite_count = tf.add_n([
+                tf.reduce_sum(tf.cast(tf.logical_not(tf.math.is_finite(value)), tf.float32))
+                for value in gradient_values
+            ]) if gradient_values else tf.constant(0.0, tf.float32)
+            zero_count = tf.add_n([
+                tf.reduce_sum(tf.cast(tf.equal(value, 0), tf.float32))
+                for value in gradient_values
+            ]) if gradient_values else tf.constant(0.0, tf.float32)
+            value_count = tf.add_n([
+                tf.cast(tf.size(value), tf.float32)
+                for value in gradient_values
+            ]) if gradient_values else tf.constant(0.0, tf.float32)
+            max_abs = tf.reduce_max(tf.stack([
+                tf.reduce_max(tf.abs(value)) for value in gradient_values
+            ])) if gradient_values else tf.constant(0.0, tf.float32)
+            stats.update({
+                'grad/global_norm_raw': global_norm,
+                'grad/global_norm_per_sample': global_norm / batch_size_float,
+                'grad/max_abs': max_abs,
+                'grad/nonfinite_count': nonfinite_count,
+                'grad/zero_fraction': zero_count / tf.maximum(value_count, 1.0),
+            })
+
+        groups = self._module_variable_groups()
+        for name, variable_ids in groups.items():
+            group_pairs = [pair for pair in valid_pairs if id(pair[1]) in variable_ids]
+            group_gradients = [pair[0] for pair in group_pairs]
+            group_variables = [pair[1] for pair in group_pairs]
+            grad_norm = None
+            param_norm = None
+            if collect_grad_stats:
+                grad_norm = (tf.linalg.global_norm(group_gradients) if group_gradients
+                             else tf.constant(0.0, tf.float32))
+                stats['grad/module_%s_norm' % name] = grad_norm
+            if collect_param_stats:
+                param_norm = (tf.linalg.global_norm(group_variables) if group_variables
+                              else tf.constant(0.0, tf.float32))
+                stats['parameter/module_%s_norm' % name] = param_norm
+            if collect_grad_stats and collect_param_stats:
+                stats['gradient_to_parameter/module_%s' % name] = (
+                    grad_norm / tf.maximum(param_norm, tf.constant(1e-12, tf.float32))
+                )
+        return stats
+
+    @staticmethod
+    def _gradient_dot(left_gradients, right_gradients):
+        products = []
+        for left, right in zip(left_gradients, right_gradients):
+            if left is None or right is None:
+                continue
+            left_value = left.values if isinstance(left, tf.IndexedSlices) else left
+            right_value = right.values if isinstance(right, tf.IndexedSlices) else right
+            products.append(tf.reduce_sum(left_value * right_value))
+        if not products:
+            return tf.constant(0.0, tf.float32)
+        return tf.add_n(products)
+
+    def _collect_task_gradient_stats(self, tape, task_losses):
+        groups = self._module_variable_groups()
+        shared_variables = [
+            variable for variable in self.model.trainable_weights
+            if id(variable) in groups['shared']
+        ]
+        task_names = ['buy', 'cat', 'click', 'ext']
+        task_gradients = {}
+        task_norms = {}
+        stats = {}
+        for name, loss in zip(task_names, task_losses):
+            # GradientTape sums a non-scalar target, matching the baseline's
+            # final-loss gradient semantics without creating an unrecorded op.
+            task_gradients[name] = tape.gradient(loss, shared_variables)
+            valid = [gradient for gradient in task_gradients[name] if gradient is not None]
+            task_norms[name] = (tf.linalg.global_norm(valid) if valid
+                                else tf.constant(0.0, tf.float32))
+            stats['grad/task_%s_shared_norm' % name] = task_norms[name]
+        for left_index, left in enumerate(task_names):
+            for right in task_names[left_index + 1:]:
+                denominator = tf.maximum(
+                    task_norms[left] * task_norms[right],
+                    tf.constant(1e-12, tf.float32),
+                )
+                stats['grad/cosine_shared_%s_%s' % (left, right)] = (
+                    self._gradient_dot(task_gradients[left], task_gradients[right]) / denominator
+                )
+        return stats
 
     def _date_range(self, start, end):
         """返回 [start, end] 闭区间内的所有天(YYYYMMDD 字符串,升序)"""
@@ -96,6 +337,30 @@ class Learner:
             print("Restored optimizer step: ", model.optimizer.iterations.numpy())
             print("load checkpoint path: ", ckpt_path)
 
+        self.wandb_monitor.start(
+            config={
+                'batch_size': model_conf.batch_size,
+                'learning_rate': model_conf.learning_rate,
+                'l2_reg': model_conf.l2_reg,
+                'feature_size': model_conf.feature_size,
+                'num_buckets': model_conf.num_buckets,
+                'fm_emb_size': model_conf.fm_emb_size,
+                'din_emb_size': model_conf.din_emb_size,
+                'train_hdfs': data_arg,
+                'checkpoint_restore_path': ckpt_path or 'fresh_initialization',
+                'wandb_log_interval': self.wandb_log_interval,
+                'wandb_param_interval': self.wandb_param_interval,
+                'wandb_task_grad_interval': self.wandb_task_grad_interval,
+                'task_gradient_diagnostics_enabled': self.wandb_task_grad_interval > 0,
+                'slot_count': len(model_conf.all_slot_ids),
+                'slot_config_hash_sha256': hashlib.sha256(
+                    ','.join(str(slot_id) for slot_id in model_conf.all_slot_ids).encode('utf-8')
+                ).hexdigest(),
+            },
+            start_day=start_day,
+            end_day=end_day,
+        )
+
         #每天训练完直接算指标,结果按天写到 metrics 文件(不落 pred/label 明细,省内存/磁盘)
         out_dir = model_conf.local_model_dir
         if not os.path.exists(out_dir):
@@ -146,6 +411,64 @@ class Learner:
             self.set_training_mode(False, True)
             self.dump_serving_model(end_day, 0)
             self.set_training_mode(True, False)
+        self.wandb_monitor.finish()
+
+    @staticmethod
+    def _tensor_float(value):
+        if hasattr(value, 'numpy'):
+            value = value.numpy()
+        array = np.asarray(value)
+        return float(array.reshape([-1])[0])
+
+    def _wandb_step_payload(self, day, losses, predictions, monitor_stats,
+                            elapsed_seconds, samples_in_window):
+        model = self.model
+        task_names = ['buy', 'cat', 'click', 'ext']
+        payload = {
+            'optimizer_step': int(model.optimizer.iterations.numpy()),
+            'progress/train_day': int(day),
+            'progress/process_step': int(self.gstep),
+            'progress/cumulative_samples': int(self.cnt),
+            'performance/window_seconds': float(elapsed_seconds),
+            'performance/examples_per_second': (
+                float(samples_in_window) / max(float(elapsed_seconds), 1e-12)
+            ),
+            'optimizer/learning_rate': self._tensor_float(
+                model.lr_schedule(model.optimizer.iterations)
+            ),
+        }
+
+        loss_names = ['buy', 'cat', 'click', 'ext', 'total']
+        for name, value in zip(loss_names, losses):
+            array = np.asarray(value.numpy(), dtype=np.float64).reshape([-1])
+            payload['loss/%s' % name] = float(np.mean(array))
+            payload['numeric/loss_%s_nonfinite_count' % name] = int(
+                np.count_nonzero(~np.isfinite(array))
+            )
+
+        for task_index, (name, prediction) in enumerate(zip(task_names, predictions)):
+            array = np.asarray(prediction.numpy(), dtype=np.float64).reshape([-1])
+            finite = array[np.isfinite(array)]
+            payload['numeric/prediction_%s_nonfinite_count' % name] = int(
+                array.size - finite.size
+            )
+            if finite.size:
+                payload['prediction/%s_mean' % name] = float(np.mean(finite))
+                payload['prediction/%s_std' % name] = float(np.std(finite))
+                payload['prediction/%s_p01' % name] = float(np.percentile(finite, 1))
+                payload['prediction/%s_p50' % name] = float(np.percentile(finite, 50))
+                payload['prediction/%s_p99' % name] = float(np.percentile(finite, 99))
+                payload['prediction/%s_below_0_01' % name] = float(np.mean(finite < 0.01))
+                payload['prediction/%s_above_0_99' % name] = float(np.mean(finite > 0.99))
+            payload['data/pos_rate_%s' % name] = float(
+                self.pos[task_index] / max(self.cnt, 1)
+            )
+
+        for name, value in monitor_stats.items():
+            numeric_value = self._tensor_float(value)
+            if np.isfinite(numeric_value):
+                payload[name] = numeric_value
+        return payload
 
     def train_one_day(self, train_data, day, train_writer, mfout=None):
         model = self.model
@@ -162,12 +485,31 @@ class Learner:
 
         n_sampled = 0
         step = -1
+        monitor_window_start = time.time()
+        monitor_window_samples = 0
         for step, feat in enumerate(train_data):
             label_arrs = [np.reshape(feat[k].numpy(), [-1]) for k in label_keys]
             self.cnt += label_arrs[0].shape[0]
             self.pos += [a.sum() for a in label_arrs]
+            monitor_window_samples += label_arrs[0].shape[0]
 
-            loss_buy, loss_cat, loss_click, loss_ext, final_loss, pred_buy, pred_cat, pred_click, pred_ext = self.train_step(feat)
+            next_process_step = self.gstep + 1
+            collect_grad_stats = next_process_step % self.wandb_log_interval == 0
+            collect_param_stats = (
+                self.wandb_param_interval > 0
+                and next_process_step % self.wandb_param_interval == 0
+            )
+            collect_task_grad_stats = (
+                self.wandb_task_grad_interval > 0
+                and next_process_step % self.wandb_task_grad_interval == 0
+            )
+            (loss_buy, loss_cat, loss_click, loss_ext, final_loss,
+             pred_buy, pred_cat, pred_click, pred_ext, monitor_stats) = self.train_step(
+                feat,
+                collect_grad_stats=collect_grad_stats,
+                collect_param_stats=collect_param_stats,
+                collect_task_grad_stats=collect_task_grad_stats,
+            )
 
             #收集 uid 采样子集的 pred/label 到内存,当天训完直接算指标
             if mfout is not None:
@@ -192,6 +534,21 @@ class Learner:
                         eval_preds[t_idx].extend(pred_arrs[t_idx][sel].tolist())
 
             self.gstep += 1
+            if collect_grad_stats or collect_param_stats or collect_task_grad_stats:
+                monitor_now = time.time()
+                payload = self._wandb_step_payload(
+                    day,
+                    [loss_buy, loss_cat, loss_click, loss_ext, final_loss],
+                    [pred_buy, pred_cat, pred_click, pred_ext],
+                    monitor_stats,
+                    monitor_now - monitor_window_start,
+                    monitor_window_samples,
+                )
+                self.wandb_monitor.log(payload)
+                self._reset_loss_window()
+                monitor_window_start = monitor_now
+                monitor_window_samples = 0
+
             if train_writer is not None and self.gstep % 100 == 0:
                 global_step = model.optimizer.iterations.numpy()  # 只在打点时同步一次,作 x 轴
                 with train_writer.as_default():
@@ -224,6 +581,10 @@ class Learner:
             step = int(day)  # 用日期做 tensorboard step(按天单调递增)
         except Exception:
             step = 0
+        wandb_day_metrics = {
+            'optimizer_step': int(self.model.optimizer.iterations.numpy()),
+            'progress/train_day': int(day),
+        }
         for t_idx, t in enumerate(task_names):
             labels = np.asarray(labels_by_task[t_idx], dtype=np.float32)
             preds = np.asarray(preds_by_task[t_idx], dtype=np.float32)
@@ -242,6 +603,11 @@ class Learner:
             except Exception:
                 gauc = float('nan')
             pos_rate = float(np.mean(labels))
+            wandb_day_metrics['daily_eval/%s_n' % t] = int(n)
+            wandb_day_metrics['daily_eval/%s_auc' % t] = float(auc)
+            wandb_day_metrics['daily_eval/%s_gauc' % t] = float(gauc)
+            wandb_day_metrics['daily_eval/%s_mae' % t] = float(mae)
+            wandb_day_metrics['daily_eval/%s_pos_rate' % t] = pos_rate
             print("METRIC day=%s task=%s n=%d auc=%.4f gauc=%.4f mae=%.4f pos_rate=%.4f" % (
                 day, t, n, auc, gauc, mae, pos_rate))
             mfout.write("%s\t%s\t%d\t%.4f\t%.4f\t%.4f\t%.4f\n" % (day, t, n, auc, gauc, mae, pos_rate))
@@ -251,6 +617,7 @@ class Learner:
                     tf.summary.scalar('eval_gauc/%s' % t, gauc, step=step)
                     tf.summary.scalar('eval_mae/%s' % t, mae, step=step)
         mfout.flush()
+        self.wandb_monitor.log(wandb_day_metrics)
 
     def save_checkpoint(self, day):
         model = self.model

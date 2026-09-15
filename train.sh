@@ -2,6 +2,10 @@
 
 source ./common.conf
 
+# Persist exact source identity in W&B without storing credentials in Git.
+export GIT_BRANCH="${GIT_BRANCH:-$(git branch --show-current 2>/dev/null || echo unknown)}"
+export GIT_COMMIT="${GIT_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+
 nowt=`date +"%Y%m%d%H%M"`
 
 set -x
