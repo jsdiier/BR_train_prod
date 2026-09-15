@@ -113,6 +113,33 @@ class Model(tf.keras.Model):
         self.attention_layer_search_long_clk = DIN_attention_Layer([50, 20], 'sigmoid', name='search_clk_seq_long')
         self.attention_layer_search_long_query = DIN_attention_Layer([50, 20], 'sigmoid', name='search_query_seq_long')
 
+        if model_conf.enable_br_100seq:
+            self.br_100seq_attention_layers = [
+                DIN_attention_Layer([50, 20], 'sigmoid', name=name)
+                for name in (
+                    'br_100seq_pay',
+                    'br_100seq_click',
+                    'br_100seq_addcart',
+                )
+            ]
+            br_100seq_reg = regularizers.l2(model_conf.l2_reg)
+            self.br_100seq_ln_layers = [
+                tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-5)
+                for _ in range(3)
+            ]
+            self.br_100seq_proj_layers = [
+                tf.keras.layers.Dense(
+                    32, activation=tf.nn.swish,
+                    kernel_regularizer=br_100seq_reg)
+                for _ in range(3)
+            ]
+            self.br_100seq_combine_layers = [
+                tf.keras.layers.Dense(
+                    32, activation=tf.nn.swish,
+                    kernel_regularizer=br_100seq_reg)
+                for _ in range(3)
+            ]
+
         # 搜索长序列：先融合多路 embedding，再与 DIN 注意力 + 均值池化残差组合，减轻「高维 concat 噪声」
         seq_token_dim = 32
         self.search_seq_token_dim = seq_token_dim
@@ -347,6 +374,27 @@ class Model(tf.keras.Model):
         att = attention_layer([seq_query, x, x, mask])
         return combine_layer(tf.concat([att, pool], axis=-1))
 
+    def _encode_br_100seq(self, pooled_output, slot_mask, seq_query):
+        outputs = []
+        sequence_slots = (
+            model_conf.br_100seq_pay_slots,
+            model_conf.br_100seq_click_slots,
+            model_conf.br_100seq_addcart_slots,
+        )
+        for index, slots in enumerate(sequence_slots):
+            slot_indices = self.slot_id_table.lookup(
+                tf.constant(slots, dtype=tf.dtypes.int32))
+            sequence = tf.gather(
+                pooled_output[:, :, 1:], slot_indices, axis=1)
+            mask = tf.gather(slot_mask, slot_indices, axis=1)
+            outputs.append(self._search_seq_encode_pool_att(
+                sequence, mask, seq_query,
+                self.br_100seq_attention_layers[index],
+                self.br_100seq_ln_layers[index],
+                self.br_100seq_proj_layers[index],
+                self.br_100seq_combine_layers[index]))
+        return outputs
+
     def ads_seq_cross_layer(self, name, nn_inputs, ads_emb, ads_hidden_dim=64, ads_output_dim=1):
         # ads_input_dim = nn_inputs.get_shape().as_list()[-1]
         ads_input_dim = tf.shape(nn_inputs)[-1]
@@ -567,6 +615,10 @@ class Model(tf.keras.Model):
             self.query_seq_ln, self.query_seq_proj, self.query_seq_combine)
         seq_outputs.append(query_search_long_seq_out)
 
+        if model_conf.enable_br_100seq:
+            seq_outputs.extend(self._encode_br_100seq(
+                pooled_output, slot_mask, emb_shop))
+
         deep = tf.concat([emb_user, emb_shop, emb_interact] + seq_outputs, axis=-1)
 
         # 余数补dims
@@ -600,4 +652,3 @@ class Model(tf.keras.Model):
             return final_pred, cvr_score, ctr_score, cat_score, ext_score
 
         return ctcvr, cat_pred, click_pred, ext_pred
-

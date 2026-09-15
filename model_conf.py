@@ -66,3 +66,18 @@ inference_benchmark_measure_batches = 100
 add_info_field_num = 24
 #uid 在每条样本 add_infos 中的下标
 uid_add_info_index = 5
+
+# BR 100seq factorial contract: group 2, sequence-only.
+enable_br_100seq = True
+enable_br_shop_preference = False
+br_100seq_pay_slots = list(range(35000, 35100))
+br_100seq_click_slots = list(range(35100, 35200))
+br_100seq_addcart_slots = list(range(35200, 35300))
+br_shop_preference_slots = list(range(1553, 1563))
+
+all_slot_ids += (
+    br_100seq_pay_slots
+    + br_100seq_click_slots
+    + br_100seq_addcart_slots
+)
+assert len(all_slot_ids) == len(set(all_slot_ids)), "duplicate registered slot ids"
